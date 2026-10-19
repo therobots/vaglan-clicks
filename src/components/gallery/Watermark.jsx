@@ -13,9 +13,10 @@ export default function Watermark({ large = false }) {
       <img
         src={watermarkImg}
         alt="Vaglan Clicks Watermark"
-        className={`object-contain opacity-60 ${
-          large ? "w-3/4 max-h-[60vh]" : "w-1/2 max-h-[30vh]"
-        }`}
+        className={`object-contain opacity-50 transition-all duration-200 ${
+          large 
+            ? "w-[40%] max-w-[350px] max-h-[40vh]"  /* Balanced size for the zoomed lightbox */
+            : "w-[60%] max-w-[180px] max-h-[25vh]"  /* Balanced size for the grid preview */        }`}
       />
     </div>
   );
