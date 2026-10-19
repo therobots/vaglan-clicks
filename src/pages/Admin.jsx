@@ -35,6 +35,10 @@ const invokeAdmin = async (body) => {
     } catch {
       // The transport may not expose a JSON error response.
     }
+    if (message === 'Failed to send a request to the Edge Function') {
+      message =
+        'Could not reach the gallery-admin Edge Function. Confirm it is deployed to the same Supabase project as VITE_SUPABASE_URL and that the project is reachable, then try again.'
+    }
     throw new Error(message)
   }
   if (data?.error) throw new Error(data.error)
