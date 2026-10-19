@@ -2,6 +2,7 @@ const db = globalThis.__B44_DB__ || { auth:{ isAuthenticated: async()=>false, me
 
 import { DEMO_EVENT_SLUG, demoPhotoUrls } from "@/data/demoPhotos";
 import { itemsOf } from "@/lib/entities";
+import { parseTimestamp } from "@/lib/timeBuckets";
 
 const DEMO_EVENT = {
   id: "demo-street-session-07",
@@ -96,9 +97,9 @@ export async function resolveEvent(slug) {
 
 const inCreatedRange = (photo, range) => {
   if (!range) return true;
-  const time = Date.parse(photo.created_date);
-  const start = range.$gte ? Date.parse(range.$gte) : Number.NEGATIVE_INFINITY;
-  const end = range.$lt ? Date.parse(range.$lt) : Number.POSITIVE_INFINITY;
+  const time = parseTimestamp(photo.created_date);
+  const start = range.$gte ? parseTimestamp(range.$gte) : Number.NEGATIVE_INFINITY;
+  const end = range.$lt ? parseTimestamp(range.$lt) : Number.POSITIVE_INFINITY;
   return time >= start && time < end;
 };
 

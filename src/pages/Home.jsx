@@ -13,6 +13,7 @@ import GalleryFooter from "@/components/gallery/GalleryFooter";
 import TimeFilterBar from "@/components/gallery/TimeFilterBar";
 import ExpiryBanner from "@/components/gallery/ExpiryBanner";
 import { loadPhotos, loadTimestamps, resolveEvent } from "@/lib/demoGallery";
+import { cacheCartSelection, readCartSelection } from "@/lib/orderSession";
 import { buildSlots, hourSlot, slotRange } from "@/lib/timeBuckets";
 import { firstPhotoPrice, nextPhotoPrice, selectionSubtotal } from "@/lib/pricing";
 
@@ -24,12 +25,25 @@ export default function Home() {
   const [activeSlot, setActiveSlot] = useState(null);
   const [tip, setTip] = useState(0);
   const [selected, setSelected] = useState([]);
+  const [cartReadyForEvent, setCartReadyForEvent] = useState(null);
   const [viewing, setViewing] = useState(null);
   const [checkoutOpen, setCheckoutOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [params] = useSearchParams();
   const slug = params.get("event");
+
+  useEffect(() => {
+    if (!event?.id) return;
+    setSelected(readCartSelection(event.id));
+    setCartReadyForEvent(event.id);
+  }, [event?.id]);
+
+  useEffect(() => {
+    if (event?.id && cartReadyForEvent === event.id) {
+      cacheCartSelection(event.id, selected);
+    }
+  }, [event?.id, cartReadyForEvent, selected]);
 
   useEffect(() => {
     let active = true;
@@ -114,8 +128,10 @@ export default function Home() {
     });
   };
 
-  const toggle = (id) =>
+  const toggle = (id) => {
+    if (typeof id !== "string" || !id) return;
     setSelected((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]));
+  };
 
   const emptyTitle = !event
     ? "This gallery isn’t live"

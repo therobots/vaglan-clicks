@@ -83,6 +83,8 @@ export default function PhotoLightbox({
               <Image
                 src={photo.preview_url}
                 alt={photo.filename || "Event photo preview"}
+                loading="lazy"
+                sizes="(max-width: 768px) 100vw, 600px"
                 fittingType="fit"
                 className="absolute inset-0 h-full w-full"
               />

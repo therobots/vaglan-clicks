@@ -9,6 +9,8 @@ export default function PhotoCard({ photo, selected, onToggle, onOpen }) {
       <Image
         src={photo.preview_url}
         alt={photo.filename || "Event photo preview"}
+        loading="lazy"
+        sizes="(max-width: 768px) 33vw, 220px"
         className="absolute inset-0 h-full w-full scale-[1.04] blur-[2px]"
       />
       <Watermark />

@@ -5,7 +5,11 @@ export const HOUR_MS = 60 * 60 * 1000;
  * so read them as UTC — otherwise the hour pills shift by the visitor's offset.
  */
 export const parseTimestamp = (value) => {
-  const text = String(value || "");
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? (value < 1e12 ? value * 1000 : value) : NaN;
+  }
+  if (value instanceof Date) return value.getTime();
+  const text = String(value ?? "").trim();
   if (!text) return NaN;
   const trimmed = text.replace(/(\.\d{3})\d+/, "$1");
   const zoned = /(?:Z|[+-]\d{2}:?\d{2})$/.test(trimmed) ? trimmed : `${trimmed}Z`;
@@ -15,13 +19,16 @@ export const parseTimestamp = (value) => {
 /** Hour block a timestamp belongs to (upload / exif time), as a number key. */
 export const hourSlot = (value) => {
   const ms = parseTimestamp(value);
-  return Number.isNaN(ms) ? null : Math.floor(ms / HOUR_MS);
+  return Number.isFinite(ms) ? Math.floor(ms / HOUR_MS) : null;
 };
 
-export const slotRange = (slot) => ({
-  start: new Date(slot * HOUR_MS).toISOString(),
-  end: new Date((slot + 1) * HOUR_MS).toISOString(),
-});
+export const slotRange = (slot) => {
+  if (!Number.isSafeInteger(slot)) throw new TypeError("Hour slot must be a safe integer");
+  return {
+    start: new Date(slot * HOUR_MS).toISOString(),
+    end: new Date((slot + 1) * HOUR_MS).toISOString(),
+  };
+};
 
 const hourLabel = (hour) => {
   const h = ((hour % 24) + 24) % 24;
@@ -37,7 +44,7 @@ export const buildSlots = (timestamps = []) => {
   );
 
   return unique.map((slot) => {
-    const hour = new Date(slot * HOUR_MS).getHours();
+    const hour = new Date(slot * HOUR_MS).getUTCHours();
     return { slot, label: `${hourLabel(hour)} – ${hourLabel(hour + 1)}` };
   });
 };
