@@ -1,14 +1,15 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Maximize2, X } from 'lucide-react'
+import { Check, X } from 'lucide-react'
 import GalleryFooter from '@/components/gallery/GalleryFooter'
 import GalleryHeader from '@/components/gallery/GalleryHeader'
 import LiveStatusPill from '@/components/gallery/LiveStatusPill'
 import Watermark from '@/components/gallery/Watermark'
 import { isSupabaseConfigured, supabase } from './supabaseClient'
-import { cacheCartSelection, readCartSelection, readCartTip } from '@/lib/orderSession'
+import { cacheCartSelection, readCartSelection } from '@/lib/orderSession'
 import { parseTimestamp } from '@/lib/timeBuckets'
 
 const CART_ID = 'public-gallery'
+const PRICE_PER_PHOTO = 3
 const PHOTO_FIELDS = 'id, preview_url, filename, timestamp'
 const FILTERS = [
   { id: 'ALL', label: 'All' },
@@ -53,7 +54,6 @@ const sortPhotos = (items) =>
 export default function App() {
   const [photos, setPhotos] = useState([])
   const [selectedIds, setSelectedIds] = useState(() => readCartSelection(CART_ID))
-  const [tip, setTip] = useState(() => readCartTip(CART_ID))
   const [activeFilter, setActiveFilter] = useState('ALL')
   const [activePhoto, setActivePhoto] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -61,16 +61,21 @@ export default function App() {
   const [connectionStatus, setConnectionStatus] = useState('connecting')
 
   useEffect(() => {
-    cacheCartSelection(CART_ID, selectedIds, tip)
-  }, [selectedIds, tip])
+    cacheCartSelection(CART_ID, selectedIds)
+  }, [selectedIds])
 
   useEffect(() => {
     if (!activePhoto) return undefined
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
     const handleKeyDown = (event) => {
       if (event.key === 'Escape') setActivePhoto(null)
     }
     window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
+    return () => {
+      document.body.style.overflow = previousOverflow
+      window.removeEventListener('keydown', handleKeyDown)
+    }
   }, [activePhoto])
 
   useEffect(() => {
@@ -95,7 +100,11 @@ export default function App() {
 
       if (!active) return
       if (error) throw error
-      setPhotos(sortPhotos(data || []))
+      const loadedPhotos = sortPhotos(data || [])
+      setPhotos(loadedPhotos)
+      setSelectedIds((current) =>
+        current.filter((selectedId) => loadedPhotos.some((photo) => photo.id === selectedId)),
+      )
       setLoadError('')
       setLoading(false)
 
@@ -140,8 +149,7 @@ export default function App() {
     [activeFilter, photos],
   )
   const selectedCount = selectedIds.length
-  const subtotal = selectedCount > 0 ? 2 + (selectedCount - 1) * 0.5 : 0
-  const total = subtotal + tip
+  const total = selectedCount * PRICE_PER_PHOTO
   const formattedTotal = new Intl.NumberFormat('en-IE', {
     style: 'currency',
     currency: 'EUR',
@@ -156,7 +164,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-white pb-28 font-sans text-neutral-900">
+    <div className="min-h-screen bg-white pb-24 font-sans text-neutral-900">
       <GalleryHeader photoCount={loading ? undefined : photos.length}>
         <LiveStatusPill state={connectionStatus === 'live' ? 'live' : 'offline'} />
       </GalleryHeader>
@@ -194,7 +202,7 @@ export default function App() {
             Loading photos…
           </p>
         ) : (
-          <div className="grid grid-cols-3 gap-1 p-1">
+          <div className="grid grid-cols-3 gap-0.5 p-0.5">
             <a
               href="https://instagram.com/vaglan_clicks"
               target="_blank"
@@ -234,10 +242,24 @@ export default function App() {
               return (
                 <article
                   key={photo.id}
-                  className={`relative aspect-square overflow-hidden bg-gray-100 ${
-                    selected ? 'ring-2 ring-inset ring-blue-600' : ''
+                  className={`relative aspect-square overflow-hidden bg-gray-100 transition-shadow ${
+                    selected ? 'ring-[2.5px] ring-inset ring-blue-600' : ''
                   }`}
                 >
+                  <button
+                    type="button"
+                    aria-label={`Preview ${photo.filename || 'photo'}`}
+                    onClick={() => setActivePhoto(photo)}
+                    className="absolute inset-0 z-0 h-full w-full cursor-zoom-in"
+                  >
+                    <img
+                      src={photo.preview_url}
+                      alt={photo.filename || 'Event photo'}
+                      loading="lazy"
+                      className="h-full w-full object-cover blur-[2px]"
+                    />
+                    <Watermark />
+                  </button>
                   <button
                     type="button"
                     aria-label={`${selected ? 'Deselect' : 'Select'} ${
@@ -245,33 +267,13 @@ export default function App() {
                     }`}
                     aria-pressed={selected}
                     onClick={() => toggleSelected(photo.id)}
-                    className="absolute inset-0 z-10 h-full w-full cursor-pointer"
+                    className={`absolute right-2 top-2 z-20 grid h-7 w-7 place-items-center rounded-full border-2 transition-colors ${
+                      selected
+                        ? 'border-blue-600 bg-blue-600 text-white'
+                        : 'border-white/90 bg-black/25 text-transparent backdrop-blur-sm'
+                    }`}
                   >
-                    <img
-                      src={photo.preview_url}
-                      alt={photo.filename || 'Event photo'}
-                      loading="lazy"
-                      className="h-full w-full object-cover"
-                    />
-                    <Watermark />
-                    <span
-                      aria-hidden="true"
-                      className={`absolute left-2 top-2 grid h-5 w-5 place-items-center rounded-full border text-xs font-bold ${
-                        selected
-                          ? 'border-blue-600 bg-blue-600 text-white'
-                          : 'border-white bg-black/25 text-transparent'
-                      }`}
-                    >
-                      ✓
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Expand ${photo.filename || 'photo'}`}
-                    onClick={() => setActivePhoto(photo)}
-                    className="absolute right-2 top-2 z-20 grid h-8 w-8 place-items-center rounded-full bg-black/50 text-white transition-colors hover:bg-black/70"
-                  >
-                    <Maximize2 className="h-4 w-4" aria-hidden="true" />
+                    {selected && <Check className="h-4 w-4" strokeWidth={3} aria-hidden="true" />}
                   </button>
                 </article>
               )
@@ -282,49 +284,35 @@ export default function App() {
         <GalleryFooter />
       </main>
 
-      {selectedCount > 0 && (
-        <aside
-          aria-label="Selected photos and checkout"
-          className="fixed inset-x-3 bottom-3 z-40 mx-auto flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-2xl border border-gray-200 bg-white p-4 shadow-xl"
-        >
-          <div>
-            <p className="text-xs font-medium text-neutral-500">
-              {selectedCount} {selectedCount === 1 ? 'photo' : 'photos'} selected
+      <aside
+        aria-label="Selected photos and checkout"
+        aria-hidden={selectedCount === 0}
+        className={`fixed inset-x-0 bottom-0 z-40 border-t border-gray-200 bg-white/95 px-4 pt-3 shadow-[0_-8px_30px_rgba(0,0,0,0.08)] backdrop-blur transition-transform duration-300 ease-out ${
+          selectedCount > 0 ? 'translate-y-0' : 'pointer-events-none translate-y-full'
+        }`}
+        style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 0.75rem)' }}
+      >
+        <div className="mx-auto flex max-w-3xl items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="truncate text-xs font-medium text-neutral-500">
+              {selectedCount} {selectedCount === 1 ? 'Photo' : 'Photos'}
             </p>
-            <p className="text-lg font-bold">{formattedTotal}</p>
+            <p className="text-base font-bold tabular-nums">{formattedTotal}</p>
           </div>
-          <div aria-label="Select a tip" className="flex gap-1 rounded-lg bg-gray-100 p-1">
-            {TIP_OPTIONS.map((option) => (
-              <button
-                key={option}
-                type="button"
-                aria-pressed={tip === option}
-                onClick={() => setTip(option)}
-                className={`rounded px-2.5 py-1.5 text-xs ${
-                  tip === option
-                    ? 'bg-white font-bold text-neutral-900 shadow-sm'
-                    : 'text-neutral-600'
-                }`}
-              >
-                {option === 0 ? 'No tip' : `+€${option}`}
-              </button>
-            ))}
-          </div>
-          <div className="flex flex-col items-end">
-            <button
-              type="button"
-              disabled
-              title="Secure checkout is not configured yet"
-              className="cursor-not-allowed rounded-xl bg-neutral-200 px-4 py-2.5 text-sm font-bold text-neutral-500"
-            >
-              Checkout
-            </button>
-            <span className="mt-1 text-[10px] text-neutral-500">
-              Secure payments are not configured
-            </span>
-          </div>
-        </aside>
-      )}
+          <button
+            type="button"
+            disabled
+            aria-describedby="checkout-unavailable-note"
+            title="Secure checkout is not configured yet"
+            className="shrink-0 rounded-xl bg-blue-600 px-5 py-3 text-sm font-bold text-white opacity-55"
+          >
+            Checkout →
+          </button>
+        </div>
+        <p id="checkout-unavailable-note" className="sr-only">
+          Checkout is unavailable until secure payment verification is configured.
+        </p>
+      </aside>
 
       {activePhoto && (
         <div
@@ -358,10 +346,15 @@ export default function App() {
           </div>
           <button
             type="button"
-            onClick={() => toggleSelected(activePhoto.id)}
+            onClick={(event) => {
+              event.stopPropagation()
+              toggleSelected(activePhoto.id)
+            }}
             className="w-full rounded-xl bg-neutral-900 py-3 text-sm font-bold text-white"
           >
-            {selectedIds.includes(activePhoto.id) ? 'Remove from selection' : 'Select photo'}
+            {selectedIds.includes(activePhoto.id)
+              ? 'Remove from Selection'
+              : `Select Photo for €${PRICE_PER_PHOTO.toFixed(2)}`}
           </button>
         </div>
       )}

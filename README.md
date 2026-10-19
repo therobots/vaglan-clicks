@@ -21,6 +21,10 @@ A live event-photo gallery built with React, Vite, and Supabase.
 
 Without valid Supabase settings, the app displays a configuration message rather than making requests to placeholder credentials. Set `VITE_INSTAGRAM_HANDLE` to change the gallery footer profile; the default is `vaglan_clicks`. Run `npm run lint` and `npm run build` to check the frontend.
 
+## Gallery and pricing
+
+The gallery displays watermarked, blurred previews in a three-column mobile grid. Visitors can filter by hour, select photos at €3.00 each, and preview them in a full-screen lightbox. Checkout is not available in the frontend-only setup selected for this project.
+
 ## Payments
 
-Checkout is intentionally disabled until a trusted payment backend is configured. The browser must not mark an order paid or calculate a charge as authoritative; payment creation, Stripe webhook verification, and original-photo signed URL issuance must happen on a server. High-resolution originals belong in the private `photo-originals` bucket, with their object paths in `private.photo_originals`; never store original paths in the public `photos` table or expose a service-role key to the browser.
+Checkout and post-payment downloads are intentionally unavailable until a trusted payment backend is configured. The browser must not mark an order paid or unlock original photos; payment creation, Stripe webhook verification, and original-photo signed URL issuance must happen on a server. High-resolution originals belong in the private `photo-originals` bucket, with their object paths in `private.photo_originals`; never store original paths in the public `photos` table or expose a service-role key to the browser.
