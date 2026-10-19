@@ -32,7 +32,7 @@ export const readCartTip = (eventId) => {
   if (!storage) return 0;
   try {
     const saved = JSON.parse(storage.getItem(cartStorageKey(eventId)) || "null");
-    return [0, 1, 2, 3].includes(saved?.tip) ? saved.tip : 0;
+    return [0, 1, 2].includes(saved?.tip) ? saved.tip : 0;
   } catch {
     return 0;
   }
@@ -45,7 +45,7 @@ export const cacheCartSelection = (eventId, photoIds, tip = 0) => {
   try {
     const ids = [...new Set(photoIds.filter((id) => typeof id === "string" && id))];
     if (ids.length) {
-      const safeTip = [0, 1, 2, 3].includes(tip) ? tip : 0;
+      const safeTip = [0, 1, 2].includes(tip) ? tip : 0;
       storage.setItem(cartStorageKey(eventId), JSON.stringify({ photoIds: ids, tip: safeTip }));
     }
     else storage.removeItem(cartStorageKey(eventId));

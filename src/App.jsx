@@ -1,94 +1,95 @@
-import React, { useEffect, useMemo, useState } from 'react'
-import { isSupabaseConfigured, supabase } from './supabaseClient'
+import { useEffect, useMemo, useState } from 'react'
+import { Maximize2, X } from 'lucide-react'
 import GalleryFooter from '@/components/gallery/GalleryFooter'
 import GalleryHeader from '@/components/gallery/GalleryHeader'
-import ExpiryBanner from '@/components/gallery/ExpiryBanner'
+import LiveStatusPill from '@/components/gallery/LiveStatusPill'
 import Watermark from '@/components/gallery/Watermark'
-import { buildSlots, hourSlot, parseTimestamp } from '@/lib/timeBuckets'
+import { isSupabaseConfigured, supabase } from './supabaseClient'
 import { cacheCartSelection, readCartSelection, readCartTip } from '@/lib/orderSession'
+import { parseTimestamp } from '@/lib/timeBuckets'
 
-const photoFields = 'id, event_id, preview_url, filename, timestamp, created_at'
-const eventFields = 'id, slug, title, event_date, is_live, expires_at, price_per_photo, currency, created_at'
-const tipOptions = [0, 1, 2, 3]
+const CART_ID = 'public-gallery'
+const PHOTO_FIELDS = 'id, preview_url, filename, timestamp'
+const FILTERS = [
+  { id: 'ALL', label: 'All' },
+  { id: '23-00', label: '23:00–00:00' },
+  { id: '00-01', label: '00:00–01:00' },
+  { id: '01-02', label: '01:00–02:00' },
+  { id: '02-03', label: '02:00–03:00' },
+]
+const TIP_OPTIONS = [0, 1, 2]
 
-const sortPhotos = (photos) =>
-  [...photos].sort((a, b) => parseTimestamp(b.timestamp) - parseTimestamp(a.timestamp))
-
-const mergePhotos = (current, incoming) => {
-  const byId = new Map(current.map((photo) => [photo.id, photo]))
-  for (const photo of incoming) {
-    if (photo?.id && photo.preview_url) byId.set(photo.id, photo)
+const photoTime = (value) => {
+  if (typeof value === 'string' && /^\d+(?:\.\d+)?$/.test(value.trim())) {
+    const numericValue = Number(value)
+    return new Date(numericValue < 1e12 ? numericValue * 1000 : numericValue)
   }
-  return sortPhotos([...byId.values()])
+  if (typeof value === 'number') {
+    return new Date(value < 1e12 ? value * 1000 : value)
+  }
+  const milliseconds = parseTimestamp(value)
+  return Number.isFinite(milliseconds) ? new Date(milliseconds) : null
 }
 
+const photoFilter = (photo) => {
+  const date = photoTime(photo.timestamp)
+  if (!date || Number.isNaN(date.getTime())) return null
+  const hour = date.getHours()
+  if (hour === 23) return '23-00'
+  if (hour === 0) return '00-01'
+  if (hour === 1) return '01-02'
+  if (hour === 2) return '02-03'
+  return null
+}
+
+const sortPhotos = (items) =>
+  [...items].sort((left, right) => {
+    const leftTime = photoTime(left.timestamp)?.getTime() ?? Number.NEGATIVE_INFINITY
+    const rightTime = photoTime(right.timestamp)?.getTime() ?? Number.NEGATIVE_INFINITY
+    const difference = rightTime - leftTime
+    return Number.isNaN(difference) ? 0 : difference
+  })
+
 export default function App() {
-  const [event, setEvent] = useState(null)
   const [photos, setPhotos] = useState([])
-  const [selectedIds, setSelectedIds] = useState([])
-  const [cartReadyForEvent, setCartReadyForEvent] = useState(null)
-  const [activeFilter, setActiveFilter] = useState(null)
+  const [selectedIds, setSelectedIds] = useState(() => readCartSelection(CART_ID))
+  const [tip, setTip] = useState(() => readCartTip(CART_ID))
+  const [activeFilter, setActiveFilter] = useState('ALL')
   const [activePhoto, setActivePhoto] = useState(null)
-  const [tip, setTip] = useState(0)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
-  const [connectionStatus, setConnectionStatus] = useState('offline')
-
-  const eventSlug = useMemo(
-    () => new URLSearchParams(window.location.search).get('event')?.trim() || '',
-    [],
-  )
+  const [connectionStatus, setConnectionStatus] = useState('connecting')
 
   useEffect(() => {
-    if (!event?.id) return
-    setSelectedIds(readCartSelection(event.id))
-    setTip(readCartTip(event.id))
-    setCartReadyForEvent(event.id)
-  }, [event?.id])
+    cacheCartSelection(CART_ID, selectedIds, tip)
+  }, [selectedIds, tip])
 
   useEffect(() => {
-    if (event?.id && cartReadyForEvent === event.id) {
-      cacheCartSelection(event.id, selectedIds, tip)
+    if (!activePhoto) return undefined
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') setActivePhoto(null)
     }
-  }, [event?.id, cartReadyForEvent, selectedIds, tip])
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [activePhoto])
 
   useEffect(() => {
     let active = true
     let channel
 
-    const loadGallery = async () => {
+    const loadPhotos = async () => {
       if (!isSupabaseConfigured || !supabase) {
-        setLoadError('Gallery is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to connect Supabase.')
+        setLoadError(
+          'Gallery is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to connect Supabase.',
+        )
+        setConnectionStatus('offline')
         setLoading(false)
         return
       }
 
-      let eventQuery = supabase.from('events').select(eventFields)
-      if (eventSlug) {
-        eventQuery = eventQuery.eq('slug', eventSlug)
-      } else {
-        eventQuery = eventQuery
-          .eq('is_live', true)
-          .gt('expires_at', new Date().toISOString())
-          .order('created_at', { ascending: false })
-          .limit(1)
-      }
-
-      const { data: currentEvent, error: eventError } = await eventQuery.maybeSingle()
-      if (!active) return
-      if (eventError) throw eventError
-      if (!currentEvent) {
-        setEvent(null)
-        setPhotos([])
-        setLoading(false)
-        return
-      }
-
-      setEvent(currentEvent)
       const { data, error } = await supabase
         .from('photos')
-        .select(photoFields)
-        .eq('event_id', currentEvent.id)
+        .select(PHOTO_FIELDS)
         .order('timestamp', { ascending: false })
         .limit(500)
 
@@ -99,29 +100,29 @@ export default function App() {
       setLoading(false)
 
       channel = supabase
-        .channel(`gallery:${currentEvent.id}`)
+        .channel('public-photos-feed')
         .on(
           'postgres_changes',
-          { event: 'INSERT', schema: 'public', table: 'photos', filter: `event_id=eq.${currentEvent.id}` },
+          { event: 'INSERT', schema: 'public', table: 'photos' },
           (payload) => {
-            if (active) setPhotos((current) => mergePhotos(current, [payload.new]))
-          },
-        )
-        .on(
-          'postgres_changes',
-          { event: 'UPDATE', schema: 'public', table: 'events', filter: `id=eq.${currentEvent.id}` },
-          (payload) => {
-            if (active) setEvent((current) => ({ ...current, ...payload.new }))
+            const photo = payload.new
+            if (!active || !photo?.id || !photo?.preview_url) return
+            setPhotos((current) => {
+              const withoutDuplicate = current.filter((item) => item.id !== photo.id)
+              return sortPhotos([...withoutDuplicate, photo])
+            })
           },
         )
         .subscribe((status) => {
-          if (active) setConnectionStatus(status === 'SUBSCRIBED' ? 'live' : 'offline')
+          if (!active) return
+          setConnectionStatus(status === 'SUBSCRIBED' ? 'live' : 'offline')
         })
     }
 
-    loadGallery().catch((error) => {
+    loadPhotos().catch((error) => {
       if (!active) return
-      setLoadError(`Could not load the gallery: ${error.message || 'Unknown error'}`)
+      setLoadError(`Could not load photos: ${error.message || 'Unknown error'}`)
+      setConnectionStatus('offline')
       setLoading(false)
     })
 
@@ -129,144 +130,122 @@ export default function App() {
       active = false
       if (channel && supabase) supabase.removeChannel(channel)
     }
-  }, [eventSlug])
+  }, [])
 
-  const timeSlots = useMemo(
-    () => buildSlots(photos.map((photo) => photo.timestamp)),
-    [photos],
-  )
-  const filteredPhotos = photos.filter(
-    (photo) => activeFilter === null || hourSlot(photo.timestamp) === activeFilter,
+  const visiblePhotos = useMemo(
+    () =>
+      activeFilter === 'ALL'
+        ? photos
+        : photos.filter((photo) => photoFilter(photo) === activeFilter),
+    [activeFilter, photos],
   )
   const selectedCount = selectedIds.length
-  const firstPhotoPrice = Number(event?.price_per_photo)
-  const safeFirstPhotoPrice =
-    Number.isFinite(firstPhotoPrice) && firstPhotoPrice >= 0 ? firstPhotoPrice : 2
-  const subtotal = selectedCount
-    ? safeFirstPhotoPrice + (selectedCount - 1) * 0.5
-    : 0
-  const amount = subtotal + tip
-  const currency = /^[A-Z]{3}$/.test(event?.currency || '') ? event.currency : 'EUR'
-  const eventExpired =
-    !event ||
-    event.is_live === false ||
-    (event.expires_at && parseTimestamp(event.expires_at) <= Date.now())
+  const subtotal = selectedCount > 0 ? 2 + (selectedCount - 1) * 0.5 : 0
+  const total = subtotal + tip
+  const formattedTotal = new Intl.NumberFormat('en-IE', {
+    style: 'currency',
+    currency: 'EUR',
+  }).format(total)
 
-  const toggleSelect = (id) => {
-    if (typeof id !== 'string' || !id) return
+  const toggleSelected = (photoId) => {
     setSelectedIds((current) =>
-      current.includes(id) ? current.filter((item) => item !== id) : [...current, id],
+      current.includes(photoId)
+        ? current.filter((selectedId) => selectedId !== photoId)
+        : [...current, photoId],
     )
   }
 
   return (
-    <div className="min-h-screen bg-white pb-24 font-sans text-neutral-900">
-      <GalleryHeader
-        eventId={event?.id}
-        eventLive={!eventExpired}
-        latestPhotoAt={photos[0]?.timestamp}
-        photoCount={loading ? undefined : photos.length}
-      />
+    <div className="min-h-screen bg-white pb-28 font-sans text-neutral-900">
+      <GalleryHeader photoCount={loading ? undefined : photos.length}>
+        <LiveStatusPill state={connectionStatus === 'live' ? 'live' : 'offline'} />
+      </GalleryHeader>
 
-      <main className="mx-auto max-w-3xl pt-14">
-        <div
-          aria-label="Filter photos by time"
-          className="flex gap-2 overflow-x-auto border-b border-gray-100 px-4 py-3 text-xs"
+      <main className="mx-auto max-w-3xl pt-16">
+        <nav
+          aria-label="Filter photos by hour"
+          className="flex gap-2 overflow-x-auto border-b border-gray-100 px-3 py-3"
         >
-          <button
-            type="button"
-            aria-pressed={activeFilter === null}
-            onClick={() => setActiveFilter(null)}
-            className={`whitespace-nowrap rounded-full border px-3 py-1.5 transition-colors ${
-              activeFilter === null
-                ? 'border-neutral-900 bg-neutral-100 font-bold text-neutral-900'
-                : 'border-gray-200 bg-white text-neutral-600'
-            }`}
-          >
-            🔥 All Shots
-          </button>
-          {timeSlots.map((slot) => (
+          {FILTERS.map((filter) => (
             <button
-              key={slot.slot}
+              key={filter.id}
               type="button"
-              aria-pressed={activeFilter === slot.slot}
-              onClick={() => setActiveFilter(slot.slot)}
-              className={`whitespace-nowrap rounded-full border px-3 py-1.5 transition-colors ${
-                activeFilter === slot.slot
+              aria-pressed={activeFilter === filter.id}
+              onClick={() => setActiveFilter(filter.id)}
+              className={`whitespace-nowrap rounded-full border px-3 py-1.5 text-xs transition-colors ${
+                activeFilter === filter.id
                   ? 'border-neutral-900 bg-neutral-100 font-bold text-neutral-900'
                   : 'border-gray-200 bg-white text-neutral-600'
               }`}
             >
-              {slot.label}
+              {filter.label}
             </button>
           ))}
-        </div>
-
-        <ExpiryBanner event={event} />
+        </nav>
 
         {loadError && (
-          <p role="alert" className="mx-auto max-w-2xl px-4 py-4 text-center text-sm text-red-700">
+          <p role="alert" className="px-4 py-5 text-center text-sm text-red-700">
             {loadError}
           </p>
         )}
 
         {loading ? (
-          <p className="py-16 text-center text-sm text-neutral-500" role="status">
+          <p role="status" className="py-20 text-center text-sm text-neutral-500">
             Loading photos…
           </p>
-        ) : filteredPhotos.length === 0 ? (
-          <div className="px-6 py-24 text-center">
-            <p className="text-[15px] font-bold tracking-tight">
-              {eventExpired
-                ? 'This gallery is not live'
-                : activeFilter === null
-                  ? 'No photos yet'
-                  : 'No photos in this time window'}
-            </p>
-            <p className="mt-1.5 text-[13px] leading-relaxed text-neutral-500">
-              {eventExpired
-                ? 'Check the event link or come back during the live gallery.'
-                : activeFilter === null
-                  ? 'New photos appear here as they are uploaded.'
-                  : 'Choose another time window to see more photos.'}
-            </p>
-          </div>
+        ) : visiblePhotos.length === 0 ? (
+          <p className="px-6 py-24 text-center text-sm text-neutral-500">
+            {activeFilter === 'ALL'
+              ? 'No photos yet. New shots will appear here as they are uploaded.'
+              : 'No photos in this time window.'}
+          </p>
         ) : (
-          <div className="grid grid-cols-3 gap-1 p-1 sm:grid-cols-4">
-            {filteredPhotos.map((photo) => {
-              const isSelected = selectedIds.includes(photo.id)
+          <div className="grid grid-cols-3 gap-1 p-1">
+            {visiblePhotos.map((photo) => {
+              const selected = selectedIds.includes(photo.id)
               return (
-                <div
+                <article
                   key={photo.id}
-                  className={`relative aspect-square cursor-pointer overflow-hidden rounded-sm bg-gray-100 ${
-                    isSelected ? 'ring-2 ring-blue-600' : ''
+                  className={`relative aspect-square overflow-hidden bg-gray-100 ${
+                    selected ? 'ring-2 ring-inset ring-blue-600' : ''
                   }`}
-                  onClick={() => setActivePhoto(photo)}
                 >
-                  <img
-                    src={photo.preview_url}
-                    alt={photo.filename || 'Event photo'}
-                    className="h-full w-full object-cover blur-[1px] contrast-105"
-                    loading="lazy"
-                  />
-                  <Watermark />
                   <button
                     type="button"
-                    aria-label={isSelected ? 'Remove photo from selection' : 'Select photo'}
-                    aria-pressed={isSelected}
-                    onClick={(clickEvent) => {
-                      clickEvent.stopPropagation()
-                      toggleSelect(photo.id)
-                    }}
-                    className={`absolute right-1.5 top-1.5 z-20 flex h-6 w-6 items-center justify-center rounded-full border transition-all ${
-                      isSelected
-                        ? 'border-blue-600 bg-blue-600 text-white'
-                        : 'border-white bg-black/30 text-white'
+                    aria-label={`${selected ? 'Deselect' : 'Select'} ${
+                      photo.filename || 'photo'
                     }`}
+                    aria-pressed={selected}
+                    onClick={() => toggleSelected(photo.id)}
+                    className="absolute inset-0 z-10 h-full w-full cursor-pointer"
                   >
-                    ✓
+                    <img
+                      src={photo.preview_url}
+                      alt={photo.filename || 'Event photo'}
+                      loading="lazy"
+                      className="h-full w-full object-cover"
+                    />
+                    <Watermark />
+                    <span
+                      aria-hidden="true"
+                      className={`absolute left-2 top-2 grid h-5 w-5 place-items-center rounded-full border text-xs font-bold ${
+                        selected
+                          ? 'border-blue-600 bg-blue-600 text-white'
+                          : 'border-white bg-black/25 text-transparent'
+                      }`}
+                    >
+                      ✓
+                    </span>
                   </button>
-                </div>
+                  <button
+                    type="button"
+                    aria-label={`Expand ${photo.filename || 'photo'}`}
+                    onClick={() => setActivePhoto(photo)}
+                    className="absolute right-2 top-2 z-20 grid h-8 w-8 place-items-center rounded-full bg-black/50 text-white transition-colors hover:bg-black/70"
+                  >
+                    <Maximize2 className="h-4 w-4" aria-hidden="true" />
+                  </button>
+                </article>
               )
             })}
           </div>
@@ -276,29 +255,30 @@ export default function App() {
       </main>
 
       {selectedCount > 0 && (
-        <div className="fixed bottom-4 left-4 right-4 z-40 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-gray-200 bg-white p-4 text-neutral-900 shadow-2xl">
+        <aside
+          aria-label="Selected photos and checkout"
+          className="fixed inset-x-3 bottom-3 z-40 mx-auto flex max-w-3xl flex-wrap items-center justify-between gap-3 rounded-2xl border border-gray-200 bg-white p-4 shadow-xl"
+        >
           <div>
-            <div className="text-xs font-medium text-neutral-500">
-              {selectedCount} {selectedCount === 1 ? 'Photo' : 'Photos'} Selected
-            </div>
-            <div className="text-lg font-bold">
-              {new Intl.NumberFormat('en-IE', { style: 'currency', currency }).format(amount)}
-            </div>
+            <p className="text-xs font-medium text-neutral-500">
+              {selectedCount} {selectedCount === 1 ? 'photo' : 'photos'} selected
+            </p>
+            <p className="text-lg font-bold">{formattedTotal}</p>
           </div>
-          <div className="flex gap-1 rounded-lg bg-gray-100 p-1 text-xs">
-            {tipOptions.map((value) => (
+          <div aria-label="Select a tip" className="flex gap-1 rounded-lg bg-gray-100 p-1">
+            {TIP_OPTIONS.map((option) => (
               <button
-                key={value}
+                key={option}
                 type="button"
-                aria-pressed={tip === value}
-                onClick={() => setTip(value)}
-                className={`rounded px-2 py-1 ${
-                  tip === value
+                aria-pressed={tip === option}
+                onClick={() => setTip(option)}
+                className={`rounded px-2.5 py-1.5 text-xs ${
+                  tip === option
                     ? 'bg-white font-bold text-neutral-900 shadow-sm'
                     : 'text-neutral-600'
                 }`}
               >
-                {value === 0 ? 'No tip' : `+€${value}`}
+                {option === 0 ? 'No tip' : `+€${option}`}
               </button>
             ))}
           </div>
@@ -306,15 +286,16 @@ export default function App() {
             <button
               type="button"
               disabled
-              className="cursor-not-allowed rounded-xl bg-gray-200 px-4 py-2.5 text-sm font-bold text-neutral-500"
+              title="Secure checkout is not configured yet"
+              className="cursor-not-allowed rounded-xl bg-neutral-200 px-4 py-2.5 text-sm font-bold text-neutral-500"
             >
-              Checkout unavailable
+              Checkout
             </button>
             <span className="mt-1 text-[10px] text-neutral-500">
-              Secure payment is not configured
+              Secure payments are not configured
             </span>
           </div>
-        </div>
+        </aside>
       )}
 
       {activePhoto && (
@@ -322,37 +303,37 @@ export default function App() {
           role="dialog"
           aria-modal="true"
           aria-label="Photo preview"
+          onClick={() => setActivePhoto(null)}
           className="fixed inset-0 z-50 flex flex-col justify-between bg-white p-4"
         >
           <div className="flex items-center justify-between">
-            <span className="text-xs text-neutral-500">Preview Shot</span>
+            <p className="text-sm font-semibold">Photo preview</p>
             <button
               type="button"
-              onClick={() => setActivePhoto(null)}
               aria-label="Close photo preview"
-              className="p-2 text-2xl font-bold text-neutral-900"
+              onClick={() => setActivePhoto(null)}
+              className="grid h-10 w-10 place-items-center rounded-full hover:bg-gray-100"
             >
-              ✕
+              <X className="h-5 w-5" />
             </button>
           </div>
-          <div className="relative my-4 flex flex-1 items-center justify-center">
+          <div
+            className="relative my-4 flex min-h-0 flex-1 items-center justify-center"
+            onClick={(event) => event.stopPropagation()}
+          >
             <img
               src={activePhoto.preview_url}
               alt={activePhoto.filename || 'Event photo preview'}
-              className="max-h-full max-w-full rounded object-contain"
-              loading="lazy"
+              className="max-h-full max-w-full object-contain"
             />
             <Watermark large />
           </div>
           <button
             type="button"
-            onClick={() => {
-              toggleSelect(activePhoto.id)
-              setActivePhoto(null)
-            }}
+            onClick={() => toggleSelected(activePhoto.id)}
             className="w-full rounded-xl bg-neutral-900 py-3 text-sm font-bold text-white"
           >
-            {selectedIds.includes(activePhoto.id) ? 'Remove from Selection' : 'Select Photo'}
+            {selectedIds.includes(activePhoto.id) ? 'Remove from selection' : 'Select photo'}
           </button>
         </div>
       )}
