@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Check, X } from 'lucide-react'
+import { AnimatePresence } from 'framer-motion'
+import { Check } from 'lucide-react'
 import GalleryFooter from '@/components/gallery/GalleryFooter'
 import GalleryHeader from '@/components/gallery/GalleryHeader'
 import LiveStatusPill from '@/components/gallery/LiveStatusPill'
+import PhotoLightbox from '@/components/gallery/PhotoLightbox'
 import Watermark from '@/components/gallery/Watermark'
 import { isSupabaseConfigured, supabase } from './supabaseClient'
 import { cacheCartSelection, readCartSelection } from '@/lib/orderSession'
@@ -149,6 +151,9 @@ export default function App() {
     [activeFilter, photos],
   )
   const selectedCount = selectedIds.length
+  const activePhotoIndex = activePhoto
+    ? visiblePhotos.findIndex((photo) => photo.id === activePhoto.id)
+    : -1
   const total = selectedCount * PRICE_PER_PHOTO
   const formattedTotal = new Intl.NumberFormat('en-IE', {
     style: 'currency',
@@ -280,50 +285,22 @@ export default function App() {
         </p>
       </aside>
 
-      {activePhoto && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label="Photo preview"
-          onClick={() => setActivePhoto(null)}
-          className="fixed inset-0 z-50 flex flex-col justify-between bg-white p-4"
-        >
-          <div className="flex items-center justify-between">
-            <p className="text-sm font-semibold">Photo preview</p>
-            <button
-              type="button"
-              aria-label="Close photo preview"
-              onClick={() => setActivePhoto(null)}
-              className="grid h-10 w-10 place-items-center rounded-full hover:bg-gray-100"
-            >
-              <X className="h-5 w-5" />
-            </button>
-          </div>
-          <div
-            className="relative my-4 flex min-h-0 flex-1 items-center justify-center"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <img
-              src={activePhoto.preview_url}
-              alt={activePhoto.filename || 'Event photo preview'}
-              className="max-h-full max-w-full object-contain"
-            />
-            <Watermark large />
-          </div>
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation()
-              toggleSelected(activePhoto.id)
-            }}
-            className="w-full rounded-xl bg-neutral-900 py-3 text-sm font-bold text-white"
-          >
-            {selectedIds.includes(activePhoto.id)
-              ? 'Remove from Selection'
-              : `Select Photo for €${PRICE_PER_PHOTO.toFixed(2)}`}
-          </button>
-        </div>
-      )}
+      <AnimatePresence>
+        {activePhoto && activePhotoIndex >= 0 && (
+          <PhotoLightbox
+            photo={activePhoto}
+            selected={selectedIds.includes(activePhoto.id)}
+            price={PRICE_PER_PHOTO}
+            currency="EUR"
+            hasPrev={activePhotoIndex > 0}
+            hasNext={activePhotoIndex < visiblePhotos.length - 1}
+            onPrev={() => setActivePhoto(visiblePhotos[activePhotoIndex - 1])}
+            onNext={() => setActivePhoto(visiblePhotos[activePhotoIndex + 1])}
+            onToggle={() => toggleSelected(activePhoto.id)}
+            onClose={() => setActivePhoto(null)}
+          />
+        )}
+      </AnimatePresence>
     </div>
   )
 }
