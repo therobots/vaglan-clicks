@@ -203,40 +203,6 @@ export default function App() {
           </p>
         ) : (
           <div className="grid grid-cols-3 gap-0.5 p-0.5">
-            <a
-              href="https://instagram.com/vaglan_clicks"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex aspect-square flex-col items-center justify-center border border-gray-200 bg-gray-50 p-2 text-center"
-            >
-              <span className="mb-1 text-xs font-bold">
-                Want to see more shots &amp; event highlights?
-              </span>
-              <span className="mb-2 text-[10px] text-gray-500">
-                Follow @vaglan_clicks on Instagram for full event drops &amp; updates.
-              </span>
-              <span className="flex items-center gap-1 rounded-lg bg-black px-2 py-1 text-[10px] font-bold text-white">
-                <svg
-                  aria-hidden="true"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  className="h-3 w-3"
-                >
-                  <rect
-                    x="3"
-                    y="3"
-                    width="18"
-                    height="18"
-                    rx="5"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                  />
-                  <circle cx="12" cy="12" r="4" stroke="currentColor" strokeWidth="2" />
-                  <circle cx="18" cy="6" r="1" fill="currentColor" />
-                </svg>
-                Follow @vaglan_clicks
-              </span>
-            </a>
             {visiblePhotos.map((photo) => {
               const selected = selectedIds.includes(photo.id)
               return (
