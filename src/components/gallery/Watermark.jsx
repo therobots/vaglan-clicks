@@ -1,4 +1,5 @@
 import React from "react";
+import watermarkImg from "../../assets/watermark.png";
 
 /**
  * The protective mark rendered on top of every unsold preview.
@@ -7,16 +8,15 @@ export default function Watermark({ large = false }) {
   return (
     <div
       aria-hidden="true"
-      className="pointer-events-none absolute inset-0 z-10 grid select-none place-items-center overflow-hidden"
+      className="pointer-events-none absolute inset-0 z-10 grid select-none place-items-center overflow-hidden p-4"
     >
-      <span
-        className={`-rotate-[18deg] whitespace-nowrap font-black uppercase tracking-[-0.04em] text-white/60 ${
-          large ? "text-[clamp(1.25rem,7vw,3.5rem)]" : "text-[clamp(0.55rem,4vw,1.6rem)]"
+      <img
+        src={watermarkImg}
+        alt="Vaglan Clicks Watermark"
+        className={`object-contain opacity-60 ${
+          large ? "w-3/4 max-h-[60vh]" : "w-1/2 max-h-[30vh]"
         }`}
-        style={{ textShadow: "0 1px 8px rgba(0,0,0,0.75)" }}
-      >
-        @vaglan_clicks
-      </span>
+      />
     </div>
   );
 }
