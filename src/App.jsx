@@ -14,6 +14,7 @@ import { parseTimestamp } from '@/lib/timeBuckets'
 
 const CART_ID = 'public-gallery'
 const PHOTO_FIELDS = 'id, preview_url, filename, timestamp, is_free'
+const LEGACY_PHOTO_FIELDS = 'id, preview_url, filename, timestamp'
 const FILTERS = [
   { id: 'ALL', label: 'All' },
   { id: '23-00', label: '23:00–00:00' },
@@ -21,6 +22,16 @@ const FILTERS = [
   { id: '01-02', label: '01:00–02:00' },
   { id: '02-03', label: '02:00–03:00' },
 ]
+const isMissingFreePhotoColumn = (error) =>
+  error?.code === '42703' ||
+  (String(error?.message || '').includes('is_free') &&
+    /column|schema cache/i.test(String(error?.message || '')))
+const isMissingGalleryStateTable = (error) =>
+  error?.code === '42P01' ||
+  error?.code === 'PGRST205' ||
+  (String(error?.message || '').includes('gallery_state') &&
+    /table|schema cache|could not find/i.test(String(error?.message || '')))
+
 const photoTime = (value) => {
   if (typeof value === 'string' && /^\d+(?:\.\d+)?$/.test(value.trim())) {
     const numericValue = Number(value)
@@ -58,6 +69,8 @@ function GalleryApp() {
   const [activeFilter, setActiveFilter] = useState('ALL')
   const [activePhoto, setActivePhoto] = useState(null)
   const [timerEndsAt, setTimerEndsAt] = useState(null)
+  const [timerAvailable, setTimerAvailable] = useState(true)
+  const [schemaNotice, setSchemaNotice] = useState('')
   const [now, setNow] = useState(Date.now())
   const [timerError, setTimerError] = useState('')
   const [downloadingPhotoId, setDownloadingPhotoId] = useState(null)
@@ -98,12 +111,34 @@ function GalleryApp() {
         return
       }
 
-      const [photoResult, timerResult] = await Promise.all([
-        supabase
+      const photoRequest = async () => {
+        const currentSchemaResult = await supabase
           .from('photos')
           .select(PHOTO_FIELDS)
           .order('timestamp', { ascending: false })
-          .limit(500),
+          .limit(500)
+        if (!currentSchemaResult.error || !isMissingFreePhotoColumn(currentSchemaResult.error)) {
+          return currentSchemaResult
+        }
+
+        setSchemaNotice(
+          'Free-photo features are not enabled yet. Apply the latest Supabase migration to enable them.',
+        )
+        const legacySchemaResult = await supabase
+          .from('photos')
+          .select(LEGACY_PHOTO_FIELDS)
+          .order('timestamp', { ascending: false })
+          .limit(500)
+        return legacySchemaResult.data
+          ? {
+              ...legacySchemaResult,
+              data: legacySchemaResult.data.map((photo) => ({ ...photo, is_free: false })),
+            }
+          : legacySchemaResult
+      }
+
+      const [photoResult, timerResult] = await Promise.all([
+        photoRequest(),
         supabase.from('gallery_state').select('timer_ends_at').eq('id', 1).maybeSingle(),
       ])
 
@@ -117,8 +152,18 @@ function GalleryApp() {
         ),
       )
       if (timerResult.error) {
-        setTimerError(`Could not load gallery timer: ${timerResult.error.message}`)
+        if (isMissingGalleryStateTable(timerResult.error)) {
+          setTimerAvailable(false)
+          setTimerEndsAt(null)
+          setSchemaNotice(
+            'Admin timer and free-photo features are not enabled yet. Apply the latest Supabase migration to enable them.',
+          )
+          setTimerError('')
+        } else {
+          setTimerError(`Could not load gallery timer: ${timerResult.error.message}`)
+        }
       } else {
+        setTimerAvailable(true)
         setTimerEndsAt(timerResult.data?.timer_ends_at || null)
         setTimerError('')
       }
@@ -170,7 +215,7 @@ function GalleryApp() {
   }, [])
 
   useEffect(() => {
-    if (!supabase) return undefined
+    if (!supabase || !timerAvailable) return undefined
     let active = true
     const refreshTimer = async () => {
       const { data, error } = await supabase
@@ -180,6 +225,15 @@ function GalleryApp() {
         .maybeSingle()
       if (!active) return
       if (error) {
+        if (isMissingGalleryStateTable(error)) {
+          setTimerAvailable(false)
+          setTimerEndsAt(null)
+          setTimerError('')
+          setSchemaNotice(
+            'Admin timer and free-photo features are not enabled yet. Apply the latest Supabase migration to enable them.',
+          )
+          return
+        }
         setTimerError(`Could not load gallery timer: ${error.message}`)
         return
       }
@@ -195,7 +249,7 @@ function GalleryApp() {
       active = false
       window.clearInterval(interval)
     }
-  }, [])
+  }, [timerAvailable])
 
   useEffect(() => {
     if (!timerEndsAt) return undefined
@@ -291,6 +345,11 @@ function GalleryApp() {
         {timerError && (
           <p role="status" className="px-4 py-2 text-center text-xs text-amber-800">
             {timerError}
+          </p>
+        )}
+        {schemaNotice && (
+          <p role="status" className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-center text-xs text-amber-900">
+            {schemaNotice}
           </p>
         )}
         <nav
