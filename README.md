@@ -27,8 +27,8 @@ The gallery displays watermarked, blurred previews in a three-column mobile grid
 
 ## Admin and free-photo setup
 
-1. Apply every migration in `supabase/migrations/` in timestamp order. The admin/timer migration adds `gallery_state`, `photos.is_free`, protected server-side admin sessions, and the timer RPCs.
-2. Configure the singleton PIN hash in the Supabase SQL editor. The entered PIN is checked only inside the Edge Function; it is never readable by public browser clients:
+1. For the existing `vaglan-clicks` Supabase project, run the updated `20261020000000_admin_timer_free_photos.sql` migration in the Supabase Dashboard SQL Editor. The older `20261019210000_gallery_security.sql` assumes a different `photos` schema and must not be run against this existing database unchanged. The admin migration adds the missing RPCs and session tables, and is compatible with the existing `photos` columns.
+2. Configure the singleton PIN hash in the Supabase SQL Editor. The entered PIN is checked only inside the Edge Function; it is never readable by public browser clients:
 
    ```sql
    update public.gallery_state
@@ -37,7 +37,7 @@ The gallery displays watermarked, blurred previews in a three-column mobile grid
    ```
 
 3. Confirm that preview objects are stored in the public `photos` bucket and original objects are stored in the private `photo-originals` bucket with their paths recorded in `private.photo_originals`.
-4. Install or run the Supabase CLI, authenticate, link the project matching `VITE_SUPABASE_URL`, and deploy the privileged function:
+4. The current `gallery-admin` function is deployed to the configured Supabase project. For future updates, install or run the Supabase CLI, authenticate, link the project matching `VITE_SUPABASE_URL`, and deploy:
 
    ```powershell
    npx supabase login

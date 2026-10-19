@@ -1,9 +1,17 @@
 create extension if not exists pgcrypto;
 
+create schema if not exists private;
+revoke all on schema private from public, anon, authenticated;
+grant usage on schema private to service_role;
+
 alter table public.photos
   add column if not exists is_free boolean not null default false;
 
-grant select (id, event_id, preview_url, filename, "timestamp", is_free, created_at)
+update public.photos set is_free = false where is_free is null;
+alter table public.photos alter column is_free set default false;
+alter table public.photos alter column is_free set not null;
+
+grant select (id, preview_url, filename, "timestamp", is_free, created_at)
   on public.photos to anon, authenticated;
 
 create table if not exists public.gallery_state (
@@ -12,8 +20,12 @@ create table if not exists public.gallery_state (
   timer_ends_at timestamptz
 );
 
+alter table public.gallery_state
+  add column if not exists admin_pin text,
+  add column if not exists timer_ends_at timestamptz;
+
 insert into public.gallery_state (id, admin_pin)
-values (1, null)
+values (1, crypt(gen_random_uuid()::text, gen_salt('bf')))
 on conflict (id) do nothing;
 
 alter table public.gallery_state enable row level security;
@@ -37,12 +49,20 @@ create table if not exists private.gallery_admin_attempts (
   attempted_at timestamptz not null default now()
 );
 
+create table if not exists private.photo_originals (
+  photo_id uuid primary key,
+  object_path text not null unique
+);
+
 revoke all on private.gallery_admin_sessions, private.gallery_admin_attempts
   from public, anon, authenticated;
-grant all on private.gallery_admin_sessions, private.gallery_admin_attempts to service_role;
+revoke all on private.photo_originals from public, anon, authenticated;
+grant all on private.gallery_admin_sessions, private.gallery_admin_attempts,
+  private.photo_originals to service_role;
 
 alter table private.gallery_admin_sessions enable row level security;
 alter table private.gallery_admin_attempts enable row level security;
+alter table private.photo_originals enable row level security;
 
 do $$
 declare

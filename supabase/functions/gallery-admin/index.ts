@@ -142,9 +142,9 @@ Deno.serve(async (request) => {
       if (clearError) throw clearError;
       const token = newSessionToken();
       const { error: sessionError } = await client.rpc("create_gallery_admin_session", {
-          token_hash: await sha256(token),
-          expiry_input: new Date(Date.now() + sessionDurationMs).toISOString(),
-        });
+        hash_input: await sha256(token),
+        expiry_input: new Date(Date.now() + sessionDurationMs).toISOString(),
+      });
       if (sessionError) throw sessionError;
       return respond({ sessionToken: token });
     }
@@ -264,6 +264,20 @@ Deno.serve(async (request) => {
     return respond({ error: "Unknown action." }, 400);
   } catch (error) {
     console.error("Gallery admin operation failed:", error);
-    return respond({ error: error instanceof Error ? error.message : "Admin request failed." }, 500);
+    const errorCode =
+      typeof error === "object" && error !== null && "code" in error
+        ? String(error.code)
+        : "";
+    const errorMessage =
+      typeof error === "object" && error !== null && "message" in error
+        ? String(error.message)
+        : "";
+    if (errorCode === "PGRST202" || errorCode === "42883") {
+      return respond(
+        { error: "Admin database setup is incomplete. Apply the admin migration, then retry." },
+        503,
+      );
+    }
+    return respond({ error: errorMessage || "Admin request failed." }, 500);
   }
 });
