@@ -1,0 +1,44 @@
+{
+  "name": "Order",
+  "type": "object",
+  "properties": {
+    "session_token": {
+      "type": "string"
+    },
+    "email": {
+      "type": "string"
+    },
+    "event_id": {
+      "type": "string"
+    },
+    "photo_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "amount": {
+      "type": "number"
+    },
+    "tip": {
+      "type": "number",
+      "default": 0
+    },
+    "currency": {
+      "type": "string",
+      "default": "EUR"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "paid"
+      ],
+      "default": "paid"
+    }
+  },
+  "required": [
+    "session_token",
+    "photo_ids"
+  ]
+}

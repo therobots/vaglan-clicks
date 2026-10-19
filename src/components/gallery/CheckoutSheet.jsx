@@ -1,0 +1,130 @@
+import React, { useEffect, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
+import { X } from "lucide-react";
+import { formatMoney } from "@/lib/money";
+import TipSelector from "@/components/gallery/TipSelector";
+
+export default function CheckoutSheet({
+  open,
+  count,
+  subtotal,
+  tip,
+  amount,
+  currency,
+  busy,
+  onClose,
+  onTipChange,
+  onPay,
+}) {
+  const [email, setEmail] = useState("");
+  const [error, setError] = useState("");
+  const valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+
+  useEffect(() => {
+    if (!open) {
+      setError("");
+    }
+  }, [open]);
+
+  const submit = (e) => {
+    e.preventDefault();
+    if (!valid) {
+      setError("Enter an email we can send your backup links to.");
+      return;
+    }
+    setError("");
+    onPay(email.trim());
+  };
+
+  return (
+    <AnimatePresence>
+      {open && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center">
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={busy ? undefined : onClose}
+            className="absolute inset-0 bg-black/40"
+          />
+          <motion.form
+            onSubmit={submit}
+            initial={{ y: "100%" }}
+            animate={{ y: 0 }}
+            exit={{ y: "100%" }}
+            transition={{ type: "spring", stiffness: 300, damping: 32 }}
+            className="relative z-10 w-full max-w-md rounded-t-3xl bg-white px-5 pb-[calc(env(safe-area-inset-bottom)+1.5rem)] pt-5"
+          >
+            <div className="mb-5 flex items-start justify-between">
+              <div>
+                <h2 className="text-xl font-black tracking-tight text-black">Checkout</h2>
+                <p className="mt-0.5 text-[13px] text-black/50">
+                  {count} {count === 1 ? "photo" : "photos"} · {formatMoney(subtotal, currency)}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={onClose}
+                disabled={busy}
+                className="grid h-8 w-8 place-items-center rounded-full bg-black/5 text-black disabled:opacity-40"
+                aria-label="Close checkout"
+              >
+                <X className="h-4 w-4" strokeWidth={2.4} />
+              </button>
+            </div>
+
+            <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.08em] text-black/60">
+              Email for backup links
+            </label>
+            <input
+              type="email"
+              inputMode="email"
+              autoComplete="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@email.com"
+              disabled={busy}
+              className="w-full rounded-xl border border-[#E5E7EB] bg-white px-4 py-3.5 text-[15px] text-black outline-none transition-colors focus:border-black disabled:opacity-60"
+            />
+            {error && <p className="mt-2 text-[12px] font-medium text-red-600">{error}</p>}
+
+            <TipSelector tip={tip} currency={currency} busy={busy} onSelect={onTipChange} />
+
+            <div className="mt-4 border-t border-[#E5E7EB] pt-4">
+              <div className="flex items-center justify-between text-[13px] font-semibold text-black/60">
+                <span>
+                  {count} {count === 1 ? "photo" : "photos"}
+                </span>
+                <span>{formatMoney(subtotal, currency)}</span>
+              </div>
+              {tip > 0 && (
+                <div className="mt-1.5 flex items-center justify-between text-[13px] font-semibold text-black/60">
+                  <span>Tip for @vaglan_clicks</span>
+                  <span>+{formatMoney(tip, currency)}</span>
+                </div>
+              )}
+              <div className="mt-3 flex items-center justify-between border-t border-[#E5E7EB] pt-3">
+                <span className="text-[13px] font-semibold text-black/60">Total</span>
+                <span className="text-xl font-black tracking-tight text-black">
+                  {formatMoney(amount, currency)}
+                </span>
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={busy}
+              className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-[#0055FF] py-4 text-[15px] font-bold text-white transition-transform active:scale-[0.99] disabled:opacity-70"
+            >
+              {busy ? "Opening secure checkout…" : `Pay ${formatMoney(amount, currency)}`}
+            </button>
+
+            <p className="mt-3 text-center text-[11px] leading-relaxed text-black/40">
+              Test mode — no real card is charged. Apple Pay and Google Pay appear here in live mode.
+            </p>
+          </motion.form>
+        </div>
+      )}
+    </AnimatePresence>
+  );
+}

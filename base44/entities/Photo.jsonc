@@ -1,0 +1,27 @@
+{
+  "name": "Photo",
+  "type": "object",
+  "properties": {
+    "event_id": {
+      "type": "string"
+    },
+    "preview_url": {
+      "type": "string"
+    },
+    "original_url": {
+      "type": "string"
+    },
+    "filename": {
+      "type": "string"
+    },
+    "is_demo": {
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "required": [
+    "event_id",
+    "preview_url",
+    "original_url"
+  ]
+}
