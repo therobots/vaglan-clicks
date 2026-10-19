@@ -6,13 +6,14 @@ import GalleryHeader from '@/components/gallery/GalleryHeader'
 import LiveStatusPill from '@/components/gallery/LiveStatusPill'
 import PhotoLightbox from '@/components/gallery/PhotoLightbox'
 import Watermark from '@/components/gallery/Watermark'
+import Admin from '@/pages/Admin'
 import { isSupabaseConfigured, supabase } from './supabaseClient'
 import { cacheCartSelection, readCartSelection } from '@/lib/orderSession'
 import { DEFAULT_FIRST_PRICE, nextPhotoPrice, selectionSubtotal } from '@/lib/pricing'
 import { parseTimestamp } from '@/lib/timeBuckets'
 
 const CART_ID = 'public-gallery'
-const PHOTO_FIELDS = 'id, preview_url, filename, timestamp'
+const PHOTO_FIELDS = 'id, preview_url, filename, timestamp, is_free'
 const FILTERS = [
   { id: 'ALL', label: 'All' },
   { id: '23-00', label: '23:00–00:00' },
@@ -51,11 +52,16 @@ const sortPhotos = (items) =>
     return Number.isNaN(difference) ? 0 : difference
   })
 
-export default function App() {
+function GalleryApp() {
   const [photos, setPhotos] = useState([])
   const [selectedIds, setSelectedIds] = useState(() => readCartSelection(CART_ID))
   const [activeFilter, setActiveFilter] = useState('ALL')
   const [activePhoto, setActivePhoto] = useState(null)
+  const [timerEndsAt, setTimerEndsAt] = useState(null)
+  const [now, setNow] = useState(Date.now())
+  const [timerError, setTimerError] = useState('')
+  const [downloadingPhotoId, setDownloadingPhotoId] = useState(null)
+  const [downloadError, setDownloadError] = useState('')
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [connectionStatus, setConnectionStatus] = useState('connecting')
@@ -92,19 +98,30 @@ export default function App() {
         return
       }
 
-      const { data, error } = await supabase
-        .from('photos')
-        .select(PHOTO_FIELDS)
-        .order('timestamp', { ascending: false })
-        .limit(500)
+      const [photoResult, timerResult] = await Promise.all([
+        supabase
+          .from('photos')
+          .select(PHOTO_FIELDS)
+          .order('timestamp', { ascending: false })
+          .limit(500),
+        supabase.from('gallery_state').select('timer_ends_at').eq('id', 1).maybeSingle(),
+      ])
 
       if (!active) return
-      if (error) throw error
-      const loadedPhotos = sortPhotos(data || [])
+      if (photoResult.error) throw photoResult.error
+      const loadedPhotos = sortPhotos(photoResult.data || [])
       setPhotos(loadedPhotos)
       setSelectedIds((current) =>
-        current.filter((selectedId) => loadedPhotos.some((photo) => photo.id === selectedId)),
+        current.filter((selectedId) =>
+          loadedPhotos.some((photo) => photo.id === selectedId && !photo.is_free),
+        ),
       )
+      if (timerResult.error) {
+        setTimerError(`Could not load gallery timer: ${timerResult.error.message}`)
+      } else {
+        setTimerEndsAt(timerResult.data?.timer_ends_at || null)
+        setTimerError('')
+      }
       setLoadError('')
       setLoading(false)
 
@@ -112,14 +129,25 @@ export default function App() {
         .channel('public-photos-feed')
         .on(
           'postgres_changes',
-          { event: 'INSERT', schema: 'public', table: 'photos' },
+          { event: '*', schema: 'public', table: 'photos' },
           (payload) => {
+            if (!active) return
+            if (payload.eventType === 'DELETE') {
+              setPhotos((current) => current.filter((photo) => photo.id !== payload.old?.id))
+              setSelectedIds((current) => current.filter((id) => id !== payload.old?.id))
+              setActivePhoto((current) => (current?.id === payload.old?.id ? null : current))
+              return
+            }
             const photo = payload.new
-            if (!active || !photo?.id || !photo?.preview_url) return
+            if (!photo?.id || !photo?.preview_url) return
+            setActivePhoto((current) => (current?.id === photo.id ? photo : current))
             setPhotos((current) => {
               const withoutDuplicate = current.filter((item) => item.id !== photo.id)
               return sortPhotos([...withoutDuplicate, photo])
             })
+            if (photo.is_free) {
+              setSelectedIds((current) => current.filter((id) => id !== photo.id))
+            }
           },
         )
         .subscribe((status) => {
@@ -141,6 +169,47 @@ export default function App() {
     }
   }, [])
 
+  useEffect(() => {
+    if (!supabase) return undefined
+    let active = true
+    const refreshTimer = async () => {
+      const { data, error } = await supabase
+        .from('gallery_state')
+        .select('timer_ends_at')
+        .eq('id', 1)
+        .maybeSingle()
+      if (!active) return
+      if (error) {
+        setTimerError(`Could not load gallery timer: ${error.message}`)
+        return
+      }
+      setTimerEndsAt(data?.timer_ends_at || null)
+      setTimerError('')
+    }
+    const interval = window.setInterval(() => {
+      refreshTimer().catch((error) => {
+        if (active) setTimerError(`Could not refresh gallery timer: ${error.message}`)
+      })
+    }, 15000)
+    return () => {
+      active = false
+      window.clearInterval(interval)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!timerEndsAt) return undefined
+    setNow(Date.now())
+    const target = parseTimestamp(timerEndsAt)
+    if (!Number.isFinite(target) || target <= Date.now()) return undefined
+    const timer = window.setInterval(() => {
+      const currentTime = Date.now()
+      setNow(currentTime)
+      if (currentTime >= target) window.clearInterval(timer)
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [timerEndsAt])
+
   const visiblePhotos = useMemo(
     () =>
       activeFilter === 'ALL'
@@ -157,6 +226,17 @@ export default function App() {
     style: 'currency',
     currency: 'EUR',
   }).format(total)
+  const remainingSeconds = timerEndsAt
+    ? Math.max(0, Math.floor((parseTimestamp(timerEndsAt) - now) / 1000))
+    : 0
+  const timerIsActive = Number.isFinite(remainingSeconds) && remainingSeconds > 0
+  const countdown = [
+    Math.floor(remainingSeconds / 3600),
+    Math.floor((remainingSeconds % 3600) / 60),
+    remainingSeconds % 60,
+  ]
+    .map((value) => String(value).padStart(2, '0'))
+    .join(':')
 
   const toggleSelected = (photoId) => {
     setSelectedIds((current) =>
@@ -166,6 +246,32 @@ export default function App() {
     )
   }
 
+  const downloadFreePhoto = async (photo) => {
+    if (!supabase || !photo?.is_free) return
+    setDownloadingPhotoId(photo.id)
+    setDownloadError('')
+    try {
+      const { data, error } = await supabase.functions.invoke('gallery-admin', {
+        body: { action: 'download-free', photoId: photo.id },
+      })
+      if (error) throw error
+      if (data?.error) throw new Error(data.error)
+      if (!data?.url) throw new Error('The secure download link was not returned.')
+
+      const anchor = document.createElement('a')
+      anchor.href = data.url
+      anchor.download = photo.filename || 'vaglan-clicks-photo'
+      anchor.rel = 'noopener noreferrer'
+      document.body.appendChild(anchor)
+      anchor.click()
+      anchor.remove()
+    } catch (error) {
+      setDownloadError(error.message || 'Could not prepare the free photo download.')
+    } finally {
+      setDownloadingPhotoId(null)
+    }
+  }
+
   return (
     <div className="min-h-screen bg-white pb-24 font-sans text-neutral-900">
       <GalleryHeader photoCount={loading ? undefined : photos.length}>
@@ -173,6 +279,20 @@ export default function App() {
       </GalleryHeader>
 
       <main className="mx-auto max-w-3xl pt-16">
+        {timerIsActive && (
+          <div
+            role="timer"
+            aria-label={`Gallery closes in ${countdown}`}
+            className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-center text-xs font-semibold text-amber-900"
+          >
+            Gallery closes in <span className="font-mono tabular-nums">{countdown}</span>
+          </div>
+        )}
+        {timerError && (
+          <p role="status" className="px-4 py-2 text-center text-xs text-amber-800">
+            {timerError}
+          </p>
+        )}
         <nav
           aria-label="Filter photos by hour"
           className="flex gap-2 overflow-x-auto border-b border-gray-100 px-3 py-3"
@@ -225,25 +345,29 @@ export default function App() {
                       src={photo.preview_url}
                       alt={photo.filename || 'Event photo'}
                       loading="lazy"
-                      className="h-full w-full object-cover blur-[2px]"
+                      className={`h-full w-full object-cover ${
+                        photo.is_free ? '' : 'blur-[2px]'
+                      }`}
                     />
-                    <Watermark />
+                    {!photo.is_free && <Watermark />}
                   </button>
-                  <button
-                    type="button"
-                    aria-label={`${selected ? 'Deselect' : 'Select'} ${
-                      photo.filename || 'photo'
-                    }`}
-                    aria-pressed={selected}
-                    onClick={() => toggleSelected(photo.id)}
-                    className={`absolute right-2 top-2 z-20 grid h-7 w-7 place-items-center rounded-full border-2 transition-colors ${
-                      selected
-                        ? 'border-blue-600 bg-blue-600 text-white'
-                        : 'border-white/90 bg-black/25 text-transparent backdrop-blur-sm'
-                    }`}
-                  >
-                    {selected && <Check className="h-4 w-4" strokeWidth={3} aria-hidden="true" />}
-                  </button>
+                  {!photo.is_free && (
+                    <button
+                      type="button"
+                      aria-label={`${selected ? 'Deselect' : 'Select'} ${
+                        photo.filename || 'photo'
+                      }`}
+                      aria-pressed={selected}
+                      onClick={() => toggleSelected(photo.id)}
+                      className={`absolute right-2 top-2 z-20 grid h-7 w-7 place-items-center rounded-full border-2 transition-colors ${
+                        selected
+                          ? 'border-blue-600 bg-blue-600 text-white'
+                          : 'border-white/90 bg-black/25 text-transparent backdrop-blur-sm'
+                      }`}
+                    >
+                      {selected && <Check className="h-4 w-4" strokeWidth={3} aria-hidden="true" />}
+                    </button>
+                  )}
                 </article>
               )
             })}
@@ -288,6 +412,10 @@ export default function App() {
           <PhotoLightbox
             photo={activePhoto}
             selected={selectedIds.includes(activePhoto.id)}
+            isFree={Boolean(activePhoto.is_free)}
+            isDownloading={downloadingPhotoId === activePhoto.id}
+            downloadError={downloadError}
+            onDownloadFree={() => downloadFreePhoto(activePhoto)}
             price={nextPhotoPrice(selectedCount, DEFAULT_FIRST_PRICE)}
             currency="EUR"
             hasPrev={activePhotoIndex > 0}
@@ -301,4 +429,8 @@ export default function App() {
       </AnimatePresence>
     </div>
   )
+}
+
+export default function App() {
+  return window.location.pathname.replace(/\/+$/, '') === '/admin' ? <Admin /> : <GalleryApp />
 }

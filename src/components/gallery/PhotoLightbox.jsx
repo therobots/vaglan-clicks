@@ -1,13 +1,15 @@
 import React, { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Check, ChevronLeft, ChevronRight, X } from "lucide-react";
-import { Image } from "@/components/ui/image";
+import { Check, ChevronLeft, ChevronRight, Download, X } from "lucide-react";
 import Watermark from "@/components/gallery/Watermark";
 import { formatMoney } from "@/lib/money";
 
 export default function PhotoLightbox({
   photo,
   selected,
+  isFree = false,
+  isDownloading = false,
+  downloadError = "",
   price,
   currency,
   hasPrev,
@@ -15,6 +17,7 @@ export default function PhotoLightbox({
   onPrev,
   onNext,
   onToggle,
+  onDownloadFree,
   onClose,
 }) {
   const [direction, setDirection] = useState(1);
@@ -180,20 +183,19 @@ export default function PhotoLightbox({
             className="absolute inset-0"
           >
             <div
-              className="relative h-full w-full select-none"
+              className="relative flex h-full w-full select-none items-center justify-center"
               style={{
                 transform: `translate3d(${zoom.x}px, ${zoom.y}px, 0) scale(${zoom.scale})`,
               }}
             >
-              <Image
+              <img
                 src={photo.preview_url}
                 alt={photo.filename || "Event photo preview"}
                 loading="lazy"
-                sizes="(max-width: 768px) 100vw, 600px"
-                fittingType="fit"
-                className="absolute inset-0 h-full w-full"
+                draggable={false}
+                className="max-h-full max-w-full object-contain"
               />
-              <Watermark large />
+              {!isFree && <Watermark large />}
             </div>
           </motion.div>
         </AnimatePresence>
@@ -219,14 +221,29 @@ export default function PhotoLightbox({
       </div>
 
       <div className="px-4 pb-[calc(env(safe-area-inset-bottom)+1.25rem)]">
+        {downloadError && (
+          <p role="alert" className="mb-2 text-center text-sm text-red-700">
+            {downloadError}
+          </p>
+        )}
         <button
           type="button"
-          onClick={onToggle}
-          className={`flex w-full items-center justify-center gap-2 rounded-2xl py-4 text-[15px] font-bold transition-transform active:scale-[0.99] ${
-            selected ? "border border-[#E5E7EB] bg-white text-black" : "bg-[#0055FF] text-white"
+          disabled={isFree && isDownloading}
+          onClick={isFree ? onDownloadFree : onToggle}
+          className={`flex w-full items-center justify-center gap-2 rounded-2xl py-4 text-[15px] font-bold transition-transform active:scale-[0.99] disabled:opacity-60 ${
+            isFree
+              ? "bg-emerald-600 text-white"
+              : selected
+                ? "border border-[#E5E7EB] bg-white text-black"
+                : "bg-[#0055FF] text-white"
           }`}
         >
-          {selected ? (
+          {isFree ? (
+            <>
+              <Download className="h-4 w-4" />
+              {isDownloading ? "Preparing Download…" : "Download Free"}
+            </>
+          ) : selected ? (
             <>
               <Check className="h-4 w-4" strokeWidth={3} />
               Remove from Selection
