@@ -13,7 +13,7 @@ export default function GalleryFooter() {
       <a
         href="https://instagram.com/vaglan_clicks"
         target="_blank"
-        rel="noreferrer"
+        rel="noopener noreferrer"
         className="mt-4 inline-flex items-center justify-center gap-2 rounded-xl bg-black px-5 py-3.5 text-[13px] font-bold text-white transition-transform active:scale-[0.98]"
       >
         <Instagram className="h-4 w-4" strokeWidth={2.4} />

@@ -6,6 +6,7 @@ import { Link } from "react-router-dom";
 import { ArrowLeft, Plus } from "lucide-react";
 import PhotoUploader from "@/components/studio/PhotoUploader";
 import LiveStatusPill from "@/components/gallery/LiveStatusPill";
+import { itemsOf } from "@/lib/entities";
 
 const slugify = (value) =>
   value
@@ -31,9 +32,10 @@ export default function Studio() {
     (async () => {
       try {
         const page = await db.entities.Event.list({ sort: "-created_date", limit: 50 });
-        setEvents(page.items);
-        if (page.items.length) {
-          setActiveId(page.items[0].id);
+        const listed = itemsOf(page);
+        setEvents(listed);
+        if (listed.length) {
+          setActiveId(listed[0].id);
         } else {
           setCreating(true);
         }
@@ -48,7 +50,19 @@ export default function Studio() {
       setPhotoCount(0);
       return;
     }
-    db.entities.Photo.count({ event_id: activeId }).then(setPhotoCount);
+    const countPhotos = async () => {
+      try {
+        if (typeof db.entities.Photo.count === "function") {
+          setPhotoCount(await db.entities.Photo.count({ event_id: activeId }));
+          return;
+        }
+        const page = await db.entities.Photo.filter({ event_id: activeId }, { limit: 500 });
+        setPhotoCount(itemsOf(page).length);
+      } catch {
+        setPhotoCount(0);
+      }
+    };
+    countPhotos();
   }, [activeId]);
 
   const activeEvent = events.find((e) => e.id === activeId) || null;

@@ -12,6 +12,7 @@ export default function CheckoutSheet({
   amount,
   currency,
   busy,
+  payError,
   onClose,
   onTipChange,
   onPay,
@@ -86,7 +87,9 @@ export default function CheckoutSheet({
               disabled={busy}
               className="w-full rounded-xl border border-[#E5E7EB] bg-white px-4 py-3.5 text-[15px] text-black outline-none transition-colors focus:border-black disabled:opacity-60"
             />
-            {error && <p className="mt-2 text-[12px] font-medium text-red-600">{error}</p>}
+            {(error || payError) && (
+              <p className="mt-2 text-[12px] font-medium text-red-600">{error || payError}</p>
+            )}
 
             <TipSelector tip={tip} currency={currency} busy={busy} onSelect={onTipChange} />
 

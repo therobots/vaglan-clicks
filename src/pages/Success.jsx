@@ -5,6 +5,9 @@ import { Link } from "react-router-dom";
 
 import { Check, Download } from "lucide-react";
 import { Image } from "@/components/ui/image";
+import { itemsOf } from "@/lib/entities";
+import { buildDemoPhotos } from "@/lib/demoGallery";
+import { readCachedOrder } from "@/lib/orderSession";
 
 export default function Success() {
   const [order, setOrder] = useState(null);
@@ -20,37 +23,57 @@ export default function Success() {
           setMissing(true);
           return;
         }
-        const found = await db.entities.Order.filter(
-          { session_token: sessionToken },
-          { limit: 1 }
-        );
-        const record = found.items[0];
+        let record;
+        try {
+          const found = await db.entities.Order.filter(
+            { session_token: sessionToken },
+            { limit: 1 }
+          );
+          record = itemsOf(found)[0];
+        } catch {
+          record = null;
+        }
+        const cached = readCachedOrder(sessionToken);
+        if (!record) record = cached?.order;
         if (!record) {
           setMissing(true);
           return;
         }
         setOrder(record);
 
-        const photos = await db.entities.Photo.filter(
-          { id: { $in: record.photo_ids } },
-          { limit: 200 }
-        );
+        let fromDb = [];
+        try {
+          fromDb = itemsOf(
+            await db.entities.Photo.filter({ id: { $in: record.photo_ids } }, { limit: 200 })
+          );
+        } catch {
+          fromDb = [];
+        }
+        const extras = [...(cached?.photos || []), ...buildDemoPhotos(record.event_id)];
         const ordered = record.photo_ids
-          .map((id) => photos.items.find((photo) => photo.id === id))
+          .map(
+            (id) =>
+              fromDb.find((photo) => photo.id === id) || extras.find((photo) => photo.id === id)
+          )
           .filter(Boolean);
 
         const unlocked = await Promise.all(
-          ordered.map(async (photo) => ({
-            ...photo,
-            download_url: photo.original_url?.startsWith("http")
-              ? photo.original_url
-              : (
-                  await db.integrations.Core.CreateFileSignedUrl({
-                    file_uri: photo.original_url,
-                    expires_in: 3600,
-                  })
-                ).signed_url,
-          }))
+          ordered.map(async (photo) => {
+            const httpUrl =
+              photo.original_url?.startsWith("http") ? photo.original_url : photo.preview_url;
+            if (httpUrl?.startsWith("http")) {
+              return { ...photo, download_url: httpUrl };
+            }
+            try {
+              const signed = await db.integrations.Core.CreateFileSignedUrl({
+                file_uri: photo.original_url,
+                expires_in: 3600,
+              });
+              return { ...photo, download_url: signed.signed_url || photo.preview_url };
+            } catch {
+              return { ...photo, download_url: photo.preview_url };
+            }
+          })
         );
         setItems(unlocked);
       } finally {

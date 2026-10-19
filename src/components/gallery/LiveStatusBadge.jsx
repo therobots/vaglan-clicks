@@ -3,6 +3,7 @@ const db = globalThis.__B44_DB__ || { auth:{ isAuthenticated: async()=>false, me
 import React, { useEffect, useState } from "react";
 
 import LiveStatusPill from "@/components/gallery/LiveStatusPill";
+import { itemsOf } from "@/lib/entities";
 
 const POLL_INTERVAL = 5000;
 const HEARTBEAT_WINDOW = 20000;
@@ -27,7 +28,7 @@ export default function LiveStatusBadge({ eventId, eventLive = true, latestPhoto
           { event_id: eventId },
           { sort: "-updated_date", limit: 1 }
         );
-        if (active) setStatus(page.items[0] || null);
+        if (active) setStatus(itemsOf(page)[0] || null);
       } catch {
         if (active) setStatus(null);
       }

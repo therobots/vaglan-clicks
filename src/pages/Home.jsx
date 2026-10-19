@@ -1,7 +1,7 @@
 const db = globalThis.__B44_DB__ || { auth:{ isAuthenticated: async()=>false, me: async()=>null }, entities:new Proxy({}, { get:()=>({ filter:async()=>[], get:async()=>null, create:async()=>({}), update:async()=>({}), delete:async()=>({}) }) }), integrations:{ Core:{ UploadFile:async()=>({ file_url:'' }) } } };
 
 import React, { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { AnimatePresence } from "framer-motion";
 
 import GalleryHeader from "@/components/gallery/GalleryHeader";
@@ -12,7 +12,8 @@ import CheckoutSheet from "@/components/gallery/CheckoutSheet";
 import GalleryFooter from "@/components/gallery/GalleryFooter";
 import TimeFilterBar from "@/components/gallery/TimeFilterBar";
 import ExpiryBanner from "@/components/gallery/ExpiryBanner";
-import { resolveEvent } from "@/lib/demoGallery";
+import { loadPhotos, loadTimestamps, resolveEvent } from "@/lib/demoGallery";
+import { cacheOrder } from "@/lib/orderSession";
 import { buildSlots, hourSlot, slotRange } from "@/lib/timeBuckets";
 import { firstPhotoPrice, nextPhotoPrice, selectionSubtotal } from "@/lib/pricing";
 
@@ -23,6 +24,7 @@ const newSessionToken = () =>
 
 export default function Home() {
   const [event, setEvent] = useState(null);
+  const [demoFallback, setDemoFallback] = useState(false);
   const [photos, setPhotos] = useState([]);
   const [timestamps, setTimestamps] = useState([]);
   const [activeSlot, setActiveSlot] = useState(null);
@@ -31,30 +33,39 @@ export default function Home() {
   const [viewing, setViewing] = useState(null);
   const [checkoutOpen, setCheckoutOpen] = useState(false);
   const [paying, setPaying] = useState(false);
+  const [payError, setPayError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const navigate = useNavigate();
-  const slug = new URLSearchParams(window.location.search).get("event");
+  const [params] = useSearchParams();
+  const slug = params.get("event");
 
   useEffect(() => {
     let active = true;
     (async () => {
+      setLoading(true);
+      setLoadError("");
       try {
         const resolved = await resolveEvent(slug);
         if (!active) return;
-        setEvent(resolved);
-        if (resolved) {
-          const page = await db.entities.Photo.filter(
-            { event_id: resolved.id },
-            { sort: "-created_date", limit: 200 }
-          );
-          const stamps = await db.entities.Photo.filter(
-            { event_id: resolved.id },
-            { sort: "created_date", limit: 500, fields: ["created_date"] }
-          );
-          if (active) {
-            setPhotos(page.items);
-            setTimestamps(stamps.items.map((photo) => photo.created_date).filter(Boolean));
-          }
+        setEvent(resolved.event);
+        setDemoFallback(resolved.demoFallback);
+        if (resolved.event) {
+          const [page, stamps] = await Promise.all([
+            loadPhotos(resolved.event.id, {}, { demoFallback: resolved.demoFallback }),
+            loadTimestamps(resolved.event.id, { demoFallback: resolved.demoFallback }),
+          ]);
+          if (!active) return;
+          setPhotos(page);
+          setTimestamps(stamps);
+        } else {
+          setPhotos([]);
+          setTimestamps([]);
+        }
+      } catch {
+        if (active) {
+          setLoadError("Couldn’t load tonight’s gallery. Refresh and try again.");
+          setPhotos([]);
         }
       } finally {
         if (active) setLoading(false);
@@ -68,14 +79,15 @@ export default function Home() {
   const eventId = event?.id;
 
   useEffect(() => {
-    if (!eventId) return;
-    return db.entities.Photo.subscribe((change) => {
+    if (!eventId || typeof db.entities.Photo.subscribe !== "function") return;
+    const unsubscribe = db.entities.Photo.subscribe((change) => {
       const incoming = change.data;
       if (change.type !== "create" || !incoming?.preview_url || incoming.event_id !== eventId) return;
       if (incoming.created_date) setTimestamps((prev) => [...prev, incoming.created_date]);
       if (activeSlot !== null && hourSlot(incoming.created_date) !== activeSlot) return;
       setPhotos((prev) => (prev.some((p) => p.id === incoming.id) ? prev : [incoming, ...prev]));
     });
+    return typeof unsubscribe === "function" ? unsubscribe : undefined;
   }, [eventId, activeSlot]);
 
   const firstPrice = firstPhotoPrice(event);
@@ -90,14 +102,18 @@ export default function Home() {
     setActiveSlot(slot);
     setViewing(null);
 
-    const query = { event_id: eventId };
+    const extraQuery = {};
     if (slot !== null) {
       const { start, end } = slotRange(slot);
-      query.created_date = { $gte: start, $lt: end };
+      extraQuery.created_date = { $gte: start, $lt: end };
     }
 
-    const page = await db.entities.Photo.filter(query, { sort: "-created_date", limit: 200 });
-    setPhotos(page.items);
+    try {
+      const page = await loadPhotos(eventId, extraQuery, { demoFallback });
+      setPhotos(page);
+    } catch {
+      setLoadError("Couldn’t filter this hour. Showing the last loaded shots.");
+    }
   };
 
   const step = (delta) => {
@@ -111,10 +127,12 @@ export default function Home() {
     setSelected((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]));
 
   const pay = async (email) => {
+    if (!selected.length || !eventId) return;
     setPaying(true);
+    setPayError("");
     const sessionToken = newSessionToken();
     try {
-      await db.entities.Order.create({
+      const order = {
         session_token: sessionToken,
         email,
         event_id: eventId,
@@ -123,13 +141,38 @@ export default function Home() {
         tip,
         currency,
         status: "paid",
-      });
-      db.analytics.track({ eventName: "checkout_completed", properties: { photo_count: selected.length, amount: total } });
+      };
+      await db.entities.Order.create(order);
+      cacheOrder(
+        order,
+        photos.filter((photo) => selected.includes(photo.id))
+      );
+      try {
+        db.analytics?.track?.({
+          eventName: "checkout_completed",
+          properties: { photo_count: selected.length, amount: total },
+        });
+      } catch {
+        // Analytics is optional — don't block the download page.
+      }
       navigate(`/success?session=${sessionToken}`);
+    } catch {
+      setPayError("Checkout didn’t go through. Try again in a moment.");
     } finally {
       setPaying(false);
     }
   };
+
+  const emptyTitle = !event
+    ? "This gallery isn’t live"
+    : activeSlot === null
+      ? "No photos yet"
+      : "Nothing in this hour";
+  const emptyCopy = !event
+    ? "Check the QR code or open the link with ?event=your-shoot-slug."
+    : activeSlot === null
+      ? "They land here the moment @vaglan_clicks uploads them from the shoot."
+      : "Tap 🔥 All Shots to see the whole night.";
 
   return (
     <div className="min-h-screen bg-white font-body text-black">
@@ -144,6 +187,10 @@ export default function Home() {
         <TimeFilterBar slots={slots} activeSlot={activeSlot} onSelect={selectSlot} />
         <ExpiryBanner event={event} />
 
+        {loadError && (
+          <p className="px-4 py-2 text-center text-[12px] font-medium text-red-600">{loadError}</p>
+        )}
+
         {loading ? (
           <div className="grid grid-cols-3 gap-[2px]">
             {Array.from({ length: 9 }).map((_, i) => (
@@ -152,14 +199,8 @@ export default function Home() {
           </div>
         ) : photos.length === 0 ? (
           <div className="px-6 py-24 text-center">
-            <p className="text-[15px] font-bold tracking-tight">
-              {activeSlot === null ? "No photos yet" : "Nothing in this hour"}
-            </p>
-            <p className="mt-1.5 text-[13px] leading-relaxed text-black/45">
-              {activeSlot === null
-                ? "They land here the moment @vaglan_clicks uploads them from the shoot."
-                : "Tap 🔥 All Shots to see the whole night."}
-            </p>
+            <p className="text-[15px] font-bold tracking-tight">{emptyTitle}</p>
+            <p className="mt-1.5 text-[13px] leading-relaxed text-black/45">{emptyCopy}</p>
           </div>
         ) : (
           <div className="grid grid-cols-3 gap-[2px]">
@@ -201,7 +242,10 @@ export default function Home() {
             count={selected.length}
             amount={subtotal}
             currency={currency}
-            onCheckout={() => setCheckoutOpen(true)}
+            onCheckout={() => {
+              setPayError("");
+              setCheckoutOpen(true);
+            }}
           />
         )}
       </AnimatePresence>
@@ -214,6 +258,7 @@ export default function Home() {
         amount={total}
         currency={currency}
         busy={paying}
+        payError={payError}
         onClose={() => setCheckoutOpen(false)}
         onTipChange={setTip}
         onPay={pay}
