@@ -23,7 +23,7 @@ Without valid Supabase settings, the app displays a configuration message rather
 
 ## Gallery and pricing
 
-The gallery displays watermarked, blurred previews in a three-column mobile grid. Visitors can filter by hour, select photos at €3.00 each, and preview them in a full-screen lightbox. Checkout is not available in the frontend-only setup selected for this project.
+The gallery displays watermarked, blurred previews in a three-column mobile grid. Visitors can filter by hour, select photos for €2.00 for the first photo and €0.50 for each additional photo in the selection, and preview them in a full-screen lightbox. Checkout is not available in the frontend-only setup selected for this project.
 
 ## Payments
 

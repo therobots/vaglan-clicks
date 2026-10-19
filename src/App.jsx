@@ -8,10 +8,10 @@ import PhotoLightbox from '@/components/gallery/PhotoLightbox'
 import Watermark from '@/components/gallery/Watermark'
 import { isSupabaseConfigured, supabase } from './supabaseClient'
 import { cacheCartSelection, readCartSelection } from '@/lib/orderSession'
+import { DEFAULT_FIRST_PRICE, nextPhotoPrice, selectionSubtotal } from '@/lib/pricing'
 import { parseTimestamp } from '@/lib/timeBuckets'
 
 const CART_ID = 'public-gallery'
-const PRICE_PER_PHOTO = 3
 const PHOTO_FIELDS = 'id, preview_url, filename, timestamp'
 const FILTERS = [
   { id: 'ALL', label: 'All' },
@@ -20,8 +20,6 @@ const FILTERS = [
   { id: '01-02', label: '01:00–02:00' },
   { id: '02-03', label: '02:00–03:00' },
 ]
-const TIP_OPTIONS = [0, 1, 2]
-
 const photoTime = (value) => {
   if (typeof value === 'string' && /^\d+(?:\.\d+)?$/.test(value.trim())) {
     const numericValue = Number(value)
@@ -154,7 +152,7 @@ export default function App() {
   const activePhotoIndex = activePhoto
     ? visiblePhotos.findIndex((photo) => photo.id === activePhoto.id)
     : -1
-  const total = selectedCount * PRICE_PER_PHOTO
+  const total = selectionSubtotal(selectedCount, DEFAULT_FIRST_PRICE)
   const formattedTotal = new Intl.NumberFormat('en-IE', {
     style: 'currency',
     currency: 'EUR',
@@ -290,7 +288,7 @@ export default function App() {
           <PhotoLightbox
             photo={activePhoto}
             selected={selectedIds.includes(activePhoto.id)}
-            price={PRICE_PER_PHOTO}
+            price={nextPhotoPrice(selectedCount, DEFAULT_FIRST_PRICE)}
             currency="EUR"
             hasPrev={activePhotoIndex > 0}
             hasNext={activePhotoIndex < visiblePhotos.length - 1}
