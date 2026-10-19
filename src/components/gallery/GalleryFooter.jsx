@@ -1,29 +1,24 @@
 import React from "react";
 import { Instagram } from "lucide-react";
 
-export default function GalleryFooter({
-  instagramHandle = import.meta.env.VITE_INSTAGRAM_HANDLE || "vaglan_clicks",
-}) {
-  const handle = String(instagramHandle).trim().replace(/^@+/, "") || "vaglan_clicks";
-
+export default function GalleryFooter() {
   return (
-    <section className="mx-3 mt-8 rounded-2xl border border-[#E5E7EB] px-5 py-6 text-center">
-      <h2 className="text-[15px] font-black leading-snug tracking-tight text-black">
-        Want to see more shots & event highlights?
-      </h2>
-      <p className="mx-auto mt-1.5 max-w-[17rem] text-[12px] leading-relaxed text-black/50">
-        Follow @{handle} on Instagram for full event drops & updates.
-      </p>
-      <a
-        href={`https://www.instagram.com/${encodeURIComponent(handle)}/`}
-        target="_blank"
-        rel="noopener noreferrer"
-        aria-label={`Follow @${handle} on Instagram (opens in a new tab)`}
-        className="mt-4 inline-flex items-center justify-center gap-2 rounded-xl bg-black px-5 py-3.5 text-[13px] font-bold text-white transition-transform active:scale-[0.98]"
-      >
-        <Instagram className="h-4 w-4" strokeWidth={2.4} />
-        Follow @{handle}
-      </a>
-    </section>
+    <footer className="mx-3 mt-8 rounded-2xl border border-neutral-800 bg-neutral-950 px-5 py-6 text-neutral-400">
+      <div className="flex flex-col items-center justify-between gap-4 text-center sm:flex-row sm:text-left">
+        <p className="text-xs">
+          &copy; {new Date().getFullYear()} @vaglan_clicks. All rights reserved.
+        </p>
+        <a
+          href="https://instagram.com/vaglan_clicks"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-2 text-sm font-semibold text-white transition-colors hover:text-neutral-300"
+          aria-label="Visit @vaglan_clicks on Instagram (opens in a new tab)"
+        >
+          <Instagram className="h-4 w-4" aria-hidden="true" />
+          <span>@vaglan_clicks</span>
+        </a>
+      </div>
+    </footer>
   );
 }
