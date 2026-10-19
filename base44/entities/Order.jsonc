@@ -34,7 +34,7 @@
         "pending",
         "paid"
       ],
-      "default": "paid"
+      "default": "pending"
     }
   },
   "required": [

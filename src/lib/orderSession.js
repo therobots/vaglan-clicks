@@ -17,21 +17,37 @@ export const readCartSelection = (eventId) => {
   if (!storage) return [];
   try {
     const saved = JSON.parse(storage.getItem(cartStorageKey(eventId)) || "[]");
-    return Array.isArray(saved)
-      ? [...new Set(saved.filter((id) => typeof id === "string" && id))]
+    const ids = Array.isArray(saved) ? saved : saved?.photoIds;
+    return Array.isArray(ids)
+      ? [...new Set(ids.filter((id) => typeof id === "string" && id))]
       : [];
   } catch {
     return [];
   }
 };
 
-export const cacheCartSelection = (eventId, photoIds) => {
+export const readCartTip = (eventId) => {
+  if (typeof eventId !== "string" || !eventId) return 0;
+  const storage = browserStorage("localStorage");
+  if (!storage) return 0;
+  try {
+    const saved = JSON.parse(storage.getItem(cartStorageKey(eventId)) || "null");
+    return [0, 1, 2, 3].includes(saved?.tip) ? saved.tip : 0;
+  } catch {
+    return 0;
+  }
+};
+
+export const cacheCartSelection = (eventId, photoIds, tip = 0) => {
   if (typeof eventId !== "string" || !eventId || !Array.isArray(photoIds)) return;
   const storage = browserStorage("localStorage");
   if (!storage) return;
   try {
     const ids = [...new Set(photoIds.filter((id) => typeof id === "string" && id))];
-    if (ids.length) storage.setItem(cartStorageKey(eventId), JSON.stringify(ids));
+    if (ids.length) {
+      const safeTip = [0, 1, 2, 3].includes(tip) ? tip : 0;
+      storage.setItem(cartStorageKey(eventId), JSON.stringify({ photoIds: ids, tip: safeTip }));
+    }
     else storage.removeItem(cartStorageKey(eventId));
   } catch {
     // The current page cart remains usable when browser storage is unavailable.

@@ -13,7 +13,7 @@ import GalleryFooter from "@/components/gallery/GalleryFooter";
 import TimeFilterBar from "@/components/gallery/TimeFilterBar";
 import ExpiryBanner from "@/components/gallery/ExpiryBanner";
 import { loadPhotos, loadTimestamps, resolveEvent } from "@/lib/demoGallery";
-import { cacheCartSelection, readCartSelection } from "@/lib/orderSession";
+import { cacheCartSelection, readCartSelection, readCartTip } from "@/lib/orderSession";
 import { buildSlots, hourSlot, slotRange } from "@/lib/timeBuckets";
 import { firstPhotoPrice, nextPhotoPrice, selectionSubtotal } from "@/lib/pricing";
 
@@ -36,14 +36,15 @@ export default function Home() {
   useEffect(() => {
     if (!event?.id) return;
     setSelected(readCartSelection(event.id));
+    setTip(readCartTip(event.id));
     setCartReadyForEvent(event.id);
   }, [event?.id]);
 
   useEffect(() => {
     if (event?.id && cartReadyForEvent === event.id) {
-      cacheCartSelection(event.id, selected);
+      cacheCartSelection(event.id, selected, tip);
     }
-  }, [event?.id, cartReadyForEvent, selected]);
+  }, [event?.id, cartReadyForEvent, selected, tip]);
 
   useEffect(() => {
     let active = true;

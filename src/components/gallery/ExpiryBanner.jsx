@@ -12,11 +12,14 @@ export default function ExpiryBanner({ event }) {
     return () => clearInterval(timer);
   }, []);
 
-  const start = event?.event_date
-    ? new Date(`${event.event_date}T00:00:00`).getTime()
-    : parseTimestamp(event?.created_date);
+  const expiry = parseTimestamp(event?.expires_at);
+  const start = Number.isFinite(expiry)
+    ? expiry - WINDOW_MS
+    : event?.event_date
+      ? parseTimestamp(event.event_date)
+      : parseTimestamp(event?.created_date);
 
-  if (!start || Number.isNaN(start)) return null;
+  if (!Number.isFinite(start)) return null;
 
   const remaining = start + WINDOW_MS - now;
   if (remaining <= 0) return null;
@@ -25,9 +28,9 @@ export default function ExpiryBanner({ event }) {
   const minutes = Math.floor((remaining % (60 * 60 * 1000)) / 60000);
 
   return (
-    <div className="sticky top-14 z-30 flex items-center justify-center gap-2 bg-black px-4 py-2">
-      <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[#EF4444]" />
-      <p className="text-center text-[11px] font-bold leading-snug tracking-tight text-white">
+    <div className="sticky top-14 z-30 flex items-center justify-center gap-2 border-y border-gray-200 bg-white px-4 py-2">
+      <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-red-500" />
+      <p className="text-center text-[11px] font-bold leading-snug tracking-tight text-neutral-800">
         ⚡ Gallery expires in {hours}h {minutes}m. Download your shots before tonight's auto-purge!
       </p>
     </div>

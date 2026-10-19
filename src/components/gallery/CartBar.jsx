@@ -8,8 +8,15 @@ export default function CartBar({ count = 0, amount = 0, currency = "EUR", onChe
   const photoCount = Number.isFinite(parsedCount) ? Math.max(0, Math.floor(parsedCount)) : 0;
   const parsedAmount = Number(amount);
   const total = Number.isFinite(parsedAmount) ? Math.max(0, parsedAmount) : 0;
-  const safeCurrency =
-    typeof currency === "string" && /^[A-Z]{3}$/.test(currency) ? currency : "EUR";
+  let safeCurrency = "EUR";
+  if (typeof currency === "string" && /^[A-Z]{3}$/.test(currency)) {
+    try {
+      new Intl.NumberFormat("en-IE", { style: "currency", currency }).format(0);
+      safeCurrency = currency;
+    } catch {
+      safeCurrency = "EUR";
+    }
+  }
   const canCheckout = photoCount > 0 && typeof onCheckout === "function";
 
   return (
@@ -19,10 +26,10 @@ export default function CartBar({ count = 0, amount = 0, currency = "EUR", onChe
         animate={{ y: 0, opacity: 1 }}
         exit={{ y: 96, opacity: 0 }}
         transition={{ type: "spring", stiffness: 320, damping: 30 }}
-        className="pointer-events-auto mx-auto flex max-w-md items-center gap-3 rounded-2xl bg-black py-2 pl-4 pr-2 text-white shadow-[0_14px_44px_rgba(0,0,0,0.3)]"
+        className="pointer-events-auto mx-auto flex max-w-md items-center gap-3 rounded-2xl border border-gray-200 bg-white py-2 pl-4 pr-2 text-neutral-900 shadow-[0_14px_44px_rgba(0,0,0,0.12)]"
       >
         <div className="flex-1">
-          <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-white/50">
+          <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-neutral-500">
             {photoCount} {photoCount === 1 ? "Photo" : "Photos"}
           </p>
           <p className="text-lg font-extrabold leading-tight tracking-tight">
@@ -35,7 +42,7 @@ export default function CartBar({ count = 0, amount = 0, currency = "EUR", onChe
             if (canCheckout) onCheckout();
           }}
           disabled={!canCheckout}
-          className="flex items-center gap-2 rounded-xl bg-[#0055FF] px-5 py-3 text-[13px] font-bold tracking-tight transition-transform active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50"
+          className="flex items-center gap-2 rounded-xl bg-neutral-900 px-5 py-3 text-[13px] font-bold tracking-tight text-white transition-transform active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50"
         >
           Checkout
           <ArrowRight className="h-4 w-4" strokeWidth={2.6} />

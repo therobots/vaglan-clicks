@@ -5,8 +5,11 @@ function Pill({ active, onClick, children }) {
     <button
       type="button"
       onClick={onClick}
+      aria-pressed={active}
       className={`shrink-0 whitespace-nowrap rounded-full border px-3.5 py-1.5 text-[11px] font-bold tracking-tight transition-colors ${
-        active ? "border-black bg-black text-white" : "border-[#E5E7EB] bg-white text-black/55"
+        active
+          ? "border-neutral-900 bg-neutral-100 text-neutral-900"
+          : "border-gray-200 bg-white text-neutral-600 hover:bg-gray-50"
       }`}
     >
       {children}
@@ -16,7 +19,10 @@ function Pill({ active, onClick, children }) {
 
 export default function TimeFilterBar({ slots = [], activeSlot, onSelect }) {
   return (
-    <div className="flex gap-1.5 overflow-x-auto px-4 pb-1 pt-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+    <div
+      aria-label="Filter photos by time"
+      className="flex gap-1.5 overflow-x-auto px-4 pb-1 pt-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+    >
       <Pill active={activeSlot === null} onClick={() => onSelect(null)}>
         🔥 All Shots
       </Pill>

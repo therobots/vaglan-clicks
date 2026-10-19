@@ -19,7 +19,9 @@ export default function TipSelector({ tip, currency, busy, onSelect }) {
               disabled={busy}
               onClick={() => onSelect(amount)}
               className={`flex-1 rounded-full border px-2 py-2 text-[11px] font-bold tracking-tight transition-colors disabled:opacity-50 ${
-                active ? "border-black bg-black text-white" : "border-[#E5E7EB] bg-white text-black/55"
+                active
+                  ? "border-neutral-900 bg-neutral-100 text-neutral-900"
+                  : "border-gray-200 bg-white text-neutral-600"
               }`}
             >
               {amount === 0 ? "No tip" : `+${formatMoney(amount, currency)}`}

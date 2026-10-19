@@ -16,11 +16,11 @@ A live event-photo gallery built with React, Vite, and Supabase.
 
    Use the project URL and **anon/public** key from the Supabase dashboard. Never put a service-role key in frontend configuration.
 
-4. Create a `public.photos` table with an `id`, `preview_url`, and `timestamp` column. `filename` is optional. Enable the table for Supabase Realtime `INSERT` events and configure row-level security policies for the gallery's intended access.
+4. Review and apply the schema/security migration in `supabase/migrations/`. It defines events, public preview metadata, sync status, pending-only order storage, and a private originals bucket. It is a starting schema for this app; inspect and back up any existing Supabase tables before applying it, since an existing `photos` table may need a data-preserving migration.
 5. Run `npm run dev` and open the local URL printed by Vite.
 
 Without valid Supabase settings, the app displays a configuration message rather than making requests to placeholder credentials. Set `VITE_INSTAGRAM_HANDLE` to change the gallery footer profile; the default is `vaglan_clicks`. Run `npm run lint` and `npm run build` to check the frontend.
 
 ## Payments
 
-Checkout is intentionally disabled until a trusted payment backend is configured. The browser must not mark an order paid or calculate a charge as authoritative; payment creation and verification must happen on a server.
+Checkout is intentionally disabled until a trusted payment backend is configured. The browser must not mark an order paid or calculate a charge as authoritative; payment creation, Stripe webhook verification, and original-photo signed URL issuance must happen on a server. High-resolution originals belong in the private `photo-originals` bucket, with their object paths in `private.photo_originals`; never store original paths in the public `photos` table or expose a service-role key to the browser.
