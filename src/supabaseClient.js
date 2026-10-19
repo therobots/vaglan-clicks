@@ -2,21 +2,23 @@ import { createClient } from '@supabase/supabase-js'
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL?.trim()
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim()
+const hasConfiguredCredentials = Boolean(
+  supabaseUrl &&
+    supabaseAnonKey &&
+    !/^your[-_ ]/i.test(supabaseUrl) &&
+    !/^your[-_ ]/i.test(supabaseAnonKey),
+)
 const hasValidUrl = (() => {
-  if (!supabaseUrl) return false
+  if (!hasConfiguredCredentials || !supabaseUrl) return false
   try {
-    return ['http:', 'https:'].includes(new URL(supabaseUrl).protocol)
+    const parsedUrl = new URL(supabaseUrl)
+    return ['http:', 'https:'].includes(parsedUrl.protocol) && Boolean(parsedUrl.host)
   } catch {
     return false
   }
 })()
 
-export const isSupabaseConfigured = Boolean(
-  hasValidUrl &&
-    supabaseAnonKey &&
-    !supabaseUrl.includes('your-project-id') &&
-    !supabaseAnonKey.includes('your-anon-public-key')
-)
+export const isSupabaseConfigured = hasValidUrl
 
 export const supabase = isSupabaseConfigured
   ? createClient(supabaseUrl, supabaseAnonKey)
