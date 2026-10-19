@@ -1,5 +1,3 @@
-const db = globalThis.__B44_DB__ || { auth:{ isAuthenticated: async()=>false, me: async()=>null }, entities:new Proxy({}, { get:()=>({ filter:async()=>[], get:async()=>null, create:async()=>({}), update:async()=>({}), delete:async()=>({}) }) }), integrations:{ Core:{ UploadFile:async()=>({ file_url:'' }) } } };
-
 // Sample gallery shown for the demo event so the app has content on first load.
 export const demoPhotoUrls = [
   "https://media.db.com/images/public/6ad613159c1bada39780ddfc/a770d9198_generated_3f694b49.png",

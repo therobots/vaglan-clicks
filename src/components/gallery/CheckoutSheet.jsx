@@ -12,14 +12,16 @@ export default function CheckoutSheet({
   amount,
   currency,
   busy,
-  payError,
+  payError = "",
   onClose,
   onTipChange,
-  onPay,
+  onPay = null,
+  checkoutEnabled = false,
 }) {
   const [email, setEmail] = useState("");
   const [error, setError] = useState("");
   const valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+  const canPay = checkoutEnabled && typeof onPay === "function" && !busy;
 
   useEffect(() => {
     if (!open) {
@@ -29,6 +31,10 @@ export default function CheckoutSheet({
 
   const submit = (e) => {
     e.preventDefault();
+    if (!checkoutEnabled || typeof onPay !== "function") {
+      setError("Secure checkout is not configured. No payment was made.");
+      return;
+    }
     if (!valid) {
       setError("Enter an email we can send your backup links to.");
       return;
@@ -84,14 +90,14 @@ export default function CheckoutSheet({
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="you@email.com"
-              disabled={busy}
+              disabled={!canPay}
               className="w-full rounded-xl border border-[#E5E7EB] bg-white px-4 py-3.5 text-[15px] text-black outline-none transition-colors focus:border-black disabled:opacity-60"
             />
             {(error || payError) && (
               <p className="mt-2 text-[12px] font-medium text-red-600">{error || payError}</p>
             )}
 
-            <TipSelector tip={tip} currency={currency} busy={busy} onSelect={onTipChange} />
+            <TipSelector tip={tip} currency={currency} busy={!canPay} onSelect={onTipChange} />
 
             <div className="mt-4 border-t border-[#E5E7EB] pt-4">
               <div className="flex items-center justify-between text-[13px] font-semibold text-black/60">
@@ -116,14 +122,20 @@ export default function CheckoutSheet({
 
             <button
               type="submit"
-              disabled={busy}
+              disabled={!canPay}
               className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-[#0055FF] py-4 text-[15px] font-bold text-white transition-transform active:scale-[0.99] disabled:opacity-70"
             >
-              {busy ? "Opening secure checkout…" : `Pay ${formatMoney(amount, currency)}`}
+              {busy
+                ? "Opening secure checkout…"
+                : canPay
+                  ? `Pay ${formatMoney(amount, currency)}`
+                  : "Checkout unavailable"}
             </button>
 
             <p className="mt-3 text-center text-[11px] leading-relaxed text-black/40">
-              Test mode — no real card is charged. Apple Pay and Google Pay appear here in live mode.
+              {checkoutEnabled
+                ? "Payment is handled securely by the configured payment provider."
+                : "Secure checkout is not configured. No payment will be taken."}
             </p>
           </motion.form>
         </div>

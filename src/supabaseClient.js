@@ -1,7 +1,23 @@
 import { createClient } from '@supabase/supabase-js'
 
-// Replace these with the values from your Supabase Dashboard (Settings -> API)
-const SUPABASE_URL = 'https://your-project-id.supabase.co'
-const SUPABASE_ANON_KEY = 'your-anon-public-key'
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL?.trim()
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim()
+const hasValidUrl = (() => {
+  if (!supabaseUrl) return false
+  try {
+    return ['http:', 'https:'].includes(new URL(supabaseUrl).protocol)
+  } catch {
+    return false
+  }
+})()
 
-export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+export const isSupabaseConfigured = Boolean(
+  hasValidUrl &&
+    supabaseAnonKey &&
+    !supabaseUrl.includes('your-project-id') &&
+    !supabaseAnonKey.includes('your-anon-public-key')
+)
+
+export const supabase = isSupabaseConfigured
+  ? createClient(supabaseUrl, supabaseAnonKey)
+  : null

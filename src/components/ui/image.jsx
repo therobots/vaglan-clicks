@@ -1,5 +1,3 @@
-const db = globalThis.__B44_DB__ || { auth:{ isAuthenticated: async()=>false, me: async()=>null }, entities:new Proxy({}, { get:()=>({ filter:async()=>[], get:async()=>null, create:async()=>({}), update:async()=>({}), delete:async()=>({}) }) }), integrations:{ Core:{ UploadFile:async()=>({ file_url:'' }) } } };
-
 import * as React from "react"
 import { ResponsiveImage } from "./responsive-image"
 import {
@@ -13,6 +11,17 @@ const FALLBACK_IMAGE_URL =
   "https://static.wixstatic.com/media/12d367_4f26ccd17f8f4e3a8958306ea08c2332~mv2.png"
 
 /**
+ * @typedef {React.ImgHTMLAttributes<HTMLImageElement> & {
+ *   fittingType?: "fill" | "fit",
+ *   originWidth?: number,
+ *   originHeight?: number,
+ *   focalPointX?: number,
+ *   focalPointY?: number,
+ *   quality?: number
+ * }} ImageProps
+ */
+
+/**
  * Image with built-in Wix Media Platform support: canonical public images on
  * media.db.com and static.wixstatic.com/media are resized to the rendered
  * container per device pixel ratio and served as AVIF/WebP when supported; `fittingType="fill"`
@@ -21,6 +30,7 @@ const FALLBACK_IMAGE_URL =
  * original swaps to the generic fallback image.
  */
 const Image = React.forwardRef(
+  /** @param {ImageProps} props */
   (
     {
       src: source,

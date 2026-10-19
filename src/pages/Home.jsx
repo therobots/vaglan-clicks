@@ -1,7 +1,7 @@
 const db = globalThis.__B44_DB__ || { auth:{ isAuthenticated: async()=>false, me: async()=>null }, entities:new Proxy({}, { get:()=>({ filter:async()=>[], get:async()=>null, create:async()=>({}), update:async()=>({}), delete:async()=>({}) }) }), integrations:{ Core:{ UploadFile:async()=>({ file_url:'' }) } } };
 
 import React, { useEffect, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import { AnimatePresence } from "framer-motion";
 
 import GalleryHeader from "@/components/gallery/GalleryHeader";
@@ -13,14 +13,8 @@ import GalleryFooter from "@/components/gallery/GalleryFooter";
 import TimeFilterBar from "@/components/gallery/TimeFilterBar";
 import ExpiryBanner from "@/components/gallery/ExpiryBanner";
 import { loadPhotos, loadTimestamps, resolveEvent } from "@/lib/demoGallery";
-import { cacheOrder } from "@/lib/orderSession";
 import { buildSlots, hourSlot, slotRange } from "@/lib/timeBuckets";
 import { firstPhotoPrice, nextPhotoPrice, selectionSubtotal } from "@/lib/pricing";
-
-const newSessionToken = () =>
-  typeof crypto !== "undefined" && crypto.randomUUID
-    ? crypto.randomUUID()
-    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
 export default function Home() {
   const [event, setEvent] = useState(null);
@@ -32,11 +26,8 @@ export default function Home() {
   const [selected, setSelected] = useState([]);
   const [viewing, setViewing] = useState(null);
   const [checkoutOpen, setCheckoutOpen] = useState(false);
-  const [paying, setPaying] = useState(false);
-  const [payError, setPayError] = useState("");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
-  const navigate = useNavigate();
   const [params] = useSearchParams();
   const slug = params.get("event");
 
@@ -126,43 +117,6 @@ export default function Home() {
   const toggle = (id) =>
     setSelected((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]));
 
-  const pay = async (email) => {
-    if (!selected.length || !eventId) return;
-    setPaying(true);
-    setPayError("");
-    const sessionToken = newSessionToken();
-    try {
-      const order = {
-        session_token: sessionToken,
-        email,
-        event_id: eventId,
-        photo_ids: selected,
-        amount: total,
-        tip,
-        currency,
-        status: "paid",
-      };
-      await db.entities.Order.create(order);
-      cacheOrder(
-        order,
-        photos.filter((photo) => selected.includes(photo.id))
-      );
-      try {
-        db.analytics?.track?.({
-          eventName: "checkout_completed",
-          properties: { photo_count: selected.length, amount: total },
-        });
-      } catch {
-        // Analytics is optional — don't block the download page.
-      }
-      navigate(`/success?session=${sessionToken}`);
-    } catch {
-      setPayError("Checkout didn’t go through. Try again in a moment.");
-    } finally {
-      setPaying(false);
-    }
-  };
-
   const emptyTitle = !event
     ? "This gallery isn’t live"
     : activeSlot === null
@@ -243,7 +197,6 @@ export default function Home() {
             amount={subtotal}
             currency={currency}
             onCheckout={() => {
-              setPayError("");
               setCheckoutOpen(true);
             }}
           />
@@ -257,11 +210,10 @@ export default function Home() {
         tip={tip}
         amount={total}
         currency={currency}
-        busy={paying}
-        payError={payError}
+        busy={false}
+        checkoutEnabled={false}
         onClose={() => setCheckoutOpen(false)}
         onTipChange={setTip}
-        onPay={pay}
       />
     </div>
   );
