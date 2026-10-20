@@ -16,7 +16,7 @@ A live event-photo gallery built with React, Vite, and Supabase.
 
    Use the project URL and **anon/public** key from the Supabase dashboard. Never put a service-role key in frontend configuration.
 
-4. Review and apply the schema/security migration in `supabase/migrations/`. It defines events, public preview metadata, sync status, pending-only order storage, and a private originals bucket. It is a starting schema for this app; inspect and back up any existing Supabase tables before applying it, since an existing `photos` table may need a data-preserving migration.
+4. Back up the existing Supabase database, then follow [`docs/SETUP.md`](./docs/SETUP.md) to review/apply migrations in timestamp order. Do not apply the archived `20261019210000_gallery_security.sql`; it assumes a different `photos` schema. The active migrations preserve existing photo rows and harden public access.
 5. Run `npm run dev` and open the local URL printed by Vite.
 
 Without valid Supabase settings, the app displays a configuration message rather than making requests to placeholder credentials. Set `VITE_INSTAGRAM_HANDLE` to change the gallery footer profile; the default is `vaglan_clicks`. Run `npm run lint` and `npm run build` to check the frontend.
@@ -27,13 +27,14 @@ The gallery displays watermarked, blurred previews in a three-column mobile grid
 
 ## Admin and free-photo setup
 
-1. For the existing `vaglan-clicks` Supabase project, run the updated `20261020000000_admin_timer_free_photos.sql` migration in the Supabase Dashboard SQL Editor. The older `20261019210000_gallery_security.sql` assumes a different `photos` schema and must not be run against this existing database unchanged. The admin migration adds the missing RPCs and session tables, and is compatible with the existing `photos` columns.
-2. Configure the singleton PIN hash in the Supabase SQL Editor. The entered PIN is checked only inside the Edge Function; it is never readable by public browser clients:
+1. Apply the active migrations described in [`docs/SETUP.md`](./docs/SETUP.md). The admin/timer migration adds `gallery_state`, `photos.is_free`, protected server-side admin sessions, and timer RPCs; the next migration restricts anon/authenticated writes and moves the PIN hash into the private schema. The previous `20261019210000_gallery_security.sql` is archived and must not be applied.
+2. Configure or rotate the private PIN hash in the Supabase SQL Editor. The entered PIN is checked only inside the Edge Function; the hash is never readable by public browser clients:
 
    ```sql
-   update public.gallery_state
-   set admin_pin = crypt('REPLACE_WITH_A_LONG_PRIVATE_PIN', gen_salt('bf'))
-   where id = 1;
+   insert into private.gallery_admin_credentials (id, pin_hash)
+   values (1, crypt('REPLACE_WITH_A_LONG_PRIVATE_PIN', gen_salt('bf')))
+   on conflict (id) do update
+   set pin_hash = excluded.pin_hash;
    ```
 
 3. Confirm that preview objects are stored in the public `photos` bucket and original objects are stored in the private `photo-originals` bucket with their paths recorded in `private.photo_originals`.
@@ -48,7 +49,7 @@ The gallery displays watermarked, blurred previews in a three-column mobile grid
    The project ref is the subdomain in the Supabase project URL (`https://YOUR_PROJECT_REF.supabase.co`). Supabase supplies `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` to deployed Edge Functions; do not add the service-role key to Vite environment variables. The `/admin` login cannot work until this function is deployed to the same project used by the frontend.
 5. Open `/admin` to manage photos and start the 48-hour timer. Reset requires confirmation plus typing `RESET`. It deletes all photo rows and empties the `photos` preview bucket; it deliberately retains original objects in `photo-originals`.
 
-Public free-photo downloads are issued as short-lived signed URLs only after the server verifies `photos.is_free`. Admin sessions expire after four hours and PIN attempts are rate-limited. The SQL migration has not been applied to the production project; review and back up existing data before applying it.
+Public free-photo downloads are issued as short-lived signed URLs only after the server verifies `photos.is_free`. Admin sessions expire after four hours and PIN attempts are rate-limited. Before deployment, follow the database backup, migration, and anon-access audit steps in [`docs/SETUP.md`](./docs/SETUP.md).
 
 ## Payments
 

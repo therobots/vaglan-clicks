@@ -7,26 +7,53 @@ grant usage on schema private to service_role;
 alter table public.photos
   add column if not exists is_free boolean not null default false;
 
-update public.photos set is_free = false where is_free is null;
 alter table public.photos alter column is_free set default false;
-alter table public.photos alter column is_free set not null;
+alter table public.photos
+  add column if not exists created_at timestamptz not null default now();
 
 grant select (id, preview_url, filename, "timestamp", is_free, created_at)
   on public.photos to anon, authenticated;
 
 create table if not exists public.gallery_state (
   id integer primary key check (id = 1),
-  admin_pin text,
   timer_ends_at timestamptz
 );
 
 alter table public.gallery_state
-  add column if not exists admin_pin text,
   add column if not exists timer_ends_at timestamptz;
 
-insert into public.gallery_state (id, admin_pin)
-values (1, crypt(gen_random_uuid()::text, gen_salt('bf')))
+insert into public.gallery_state (id)
+values (1)
 on conflict (id) do nothing;
+
+create table if not exists private.gallery_admin_credentials (
+  id integer primary key check (id = 1),
+  pin_hash text not null
+);
+alter table private.gallery_admin_credentials enable row level security;
+revoke all on private.gallery_admin_credentials from public, anon, authenticated;
+grant all on private.gallery_admin_credentials to service_role;
+
+do $$
+begin
+  if exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'gallery_state'
+      and column_name = 'admin_pin'
+  ) then
+    execute $migration$
+      insert into private.gallery_admin_credentials (id, pin_hash)
+      select id::integer, admin_pin
+      from public.gallery_state
+      where id = 1 and admin_pin is not null
+      on conflict (id) do nothing
+    $migration$;
+    alter table public.gallery_state drop column admin_pin;
+  end if;
+end
+$$;
 
 alter table public.gallery_state enable row level security;
 revoke all on public.gallery_state from public, anon, authenticated;
@@ -56,12 +83,14 @@ create table if not exists private.photo_originals (
 
 revoke all on private.gallery_admin_sessions, private.gallery_admin_attempts
   from public, anon, authenticated;
+revoke all on private.gallery_admin_credentials from public, anon, authenticated;
 revoke all on private.photo_originals from public, anon, authenticated;
 grant all on private.gallery_admin_sessions, private.gallery_admin_attempts,
-  private.photo_originals to service_role;
+  private.gallery_admin_credentials, private.photo_originals to service_role;
 
 alter table private.gallery_admin_sessions enable row level security;
 alter table private.gallery_admin_attempts enable row level security;
+alter table private.gallery_admin_credentials enable row level security;
 alter table private.photo_originals enable row level security;
 
 do $$
@@ -90,8 +119,8 @@ security definer
 set search_path = pg_catalog, public, extensions
 as $$
   select coalesce((
-    select admin_pin is not null and admin_pin = crypt(pin_input, admin_pin)
-    from public.gallery_state
+    select pin_hash = crypt(pin_input, pin_hash)
+    from private.gallery_admin_credentials
     where id = 1
   ), false);
 $$;

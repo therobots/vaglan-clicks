@@ -1,0 +1,7 @@
+project_id = "mrmggunmyqasfaevlakj"
+
+[functions.gallery-admin]
+verify_jwt = true
+
+[functions.stripe-webhook]
+verify_jwt = false
