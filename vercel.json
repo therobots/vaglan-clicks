@@ -8,6 +8,14 @@
     {
       "source": "/success",
       "destination": "/"
+    },
+    {
+      "source": "/info",
+      "destination": "/"
+    },
+    {
+      "source": "/orders/:path*",
+      "destination": "/"
     }
   ]
 }

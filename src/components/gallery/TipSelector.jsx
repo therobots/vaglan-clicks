@@ -10,7 +10,7 @@ export default function TipSelector({
   return (
     <div className="mt-5 border-t border-[#E5E7EB] pt-4">
       <p className="text-[13px] font-bold tracking-tight text-black">
-        Buy @vaglan_clicks a drink?
+        Buy me a drink?
       </p>
       <div className="mt-2.5 flex gap-1.5">
         {optionsCents.map((amountCents) => {

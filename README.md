@@ -16,10 +16,10 @@ A live photo gallery built with React, Vite, and Supabase.
 
    Use the project URL and **anon/public** key from the Supabase dashboard. Never put a service-role key in frontend configuration.
 
-4. Back up the existing Supabase database, then follow [`docs/SETUP.md`](./docs/SETUP.md) to review/apply active migrations in timestamp order. Do not apply the archived `20261019210000_gallery_security.sql`; it assumes a different `photos` schema. The active migrations preserve existing photo rows, harden public access, add server-priced order/payment records, and add Athens-night navigation and per-night expiry.
+4. Back up the existing Supabase database, then follow [`docs/SETUP.md`](./docs/SETUP.md) to review/apply active migrations in timestamp order. Do not apply the archived `20261019210000_gallery_security.sql`; it assumes a different `photos` schema. The active migrations preserve existing photo rows, harden public access, add server-priced order/payment records, Athens-night navigation, per-night expiry, and private photo-removal request handling.
 5. Run `npm run dev` and open the local URL printed by Vite.
 
-Without valid Supabase settings, the app displays a configuration message rather than making requests to placeholder credentials. Set `VITE_INSTAGRAM_HANDLE` to change the gallery footer profile; the default is `vaglan_clicks`. Run `npm run lint` and `npm run build` to check the frontend.
+Without valid Supabase settings, the app displays a configuration message rather than making requests to placeholder credentials. Set `VITE_INSTAGRAM_HANDLE` to change the gallery footer profile; the default is `vaglan_clicks`. Run `npm test`, `npm run lint`, `npm run typecheck`, and `npm run build` to check the app. `npm run test:e2e` runs the Playwright Info-page and order-token-route smoke tests; install Chromium with `npx playwright install chromium` first.
 
 ## Gallery and pricing
 
@@ -29,7 +29,7 @@ Camera ingestion must use corrected UTC capture timestamps and night-prefixed st
 
 ## Admin and free-photo setup
 
-1. Apply the active migrations described in [`docs/SETUP.md`](./docs/SETUP.md). The admin migration adds `gallery_state`, `photos.is_free`, protected server-side admin sessions, and legacy timer storage; the following migrations restrict anon/authenticated writes, move the PIN hash into the private schema, and add per-night expiry. The legacy timer is retained but no longer used. The previous `20261019210000_gallery_security.sql` is archived and must not be applied.
+1. Apply the active migrations described in [`docs/SETUP.md`](./docs/SETUP.md). The admin migration adds `gallery_state`, `photos.is_free`, protected server-side admin sessions, and legacy timer storage; the following migrations restrict anon/authenticated writes, move the PIN hash into the private schema, add per-night expiry, and add private removal requests and reporting RPCs. The legacy timer is retained but no longer used. The previous `20261019210000_gallery_security.sql` is archived and must not be applied.
 2. Configure or rotate the private PIN hash in the Supabase SQL Editor. The entered PIN is checked only inside the Edge Function; the hash is never readable by public browser clients:
 
    ```sql
@@ -40,16 +40,19 @@ Camera ingestion must use corrected UTC capture timestamps and night-prefixed st
    ```
 
 3. Confirm that preview objects are stored in the public `photos` bucket and original objects are stored in the private `photo-originals` bucket with their paths recorded in `private.photo_originals`.
-4. The current `gallery-admin` function is deployed to the configured Supabase project. For future updates, install or run the Supabase CLI, authenticate, link the project matching `VITE_SUPABASE_URL`, and deploy:
+4. Deploy `gallery-admin` and `request-photo-removal` to the configured Supabase project. Install or run the Supabase CLI, authenticate, link the project matching `VITE_SUPABASE_URL`, and deploy:
 
    ```powershell
    npx supabase login
    npx supabase link --project-ref YOUR_PROJECT_REF
    npx supabase functions deploy gallery-admin
+   npx supabase functions deploy request-photo-removal --no-verify-jwt
    ```
 
-   The project ref is the subdomain in the Supabase project URL (`https://YOUR_PROJECT_REF.supabase.co`). Supabase supplies `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` to deployed Edge Functions; do not add the service-role key to Vite environment variables. The `/admin` login cannot work until this function is deployed to the same project used by the frontend.
-5. Open `/admin` to manage photos. Reset requires confirmation plus typing `RESET`. It deletes all photo rows and empties the `photos` preview bucket; it deliberately retains original objects in `photo-originals`.
+   The project ref is the subdomain in the Supabase project URL (`https://YOUR_PROJECT_REF.supabase.co`). Supabase supplies `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` to deployed Edge Functions; do not add the service-role key to Vite environment variables. The admin dashboard and public removal requests require their functions to be deployed to the same project used by the frontend.
+5. Open `/admin` to manage photos, review removal requests, export sales, browse Athens-night reports, and download the gallery QR code. Reset requires confirmation plus typing `RESET`. It deletes all photo rows and empties the `photos` preview bucket; it deliberately retains original objects in `photo-originals`.
+
+The public `/info` page is bilingual and includes the photo-removal request process. Have the operator-specific legal information reviewed and complete the checklist in [`docs/SETUP.md`](./docs/SETUP.md) before public sales.
 
 Public free-photo downloads are issued as short-lived signed URLs only after the server verifies `photos.is_free`. Admin sessions expire after four hours and PIN attempts are rate-limited. Before deployment, follow the database backup, migration, and anon-access audit steps in [`docs/SETUP.md`](./docs/SETUP.md).
 

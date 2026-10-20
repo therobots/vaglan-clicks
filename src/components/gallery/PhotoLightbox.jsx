@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Check, ChevronLeft, ChevronRight, Download, X } from "lucide-react";
 import Watermark from "@/components/gallery/Watermark";
 import { formatMoney } from "@/lib/money";
+import { galleryText, useGalleryLanguage } from "@/lib/galleryLanguage";
 
 export default function PhotoLightbox({
   photo,
@@ -19,8 +20,11 @@ export default function PhotoLightbox({
   onNext,
   onToggle,
   onDownloadFree,
+  onRequestRemoval,
   onClose,
 }) {
+  const language = useGalleryLanguage();
+  const text = galleryText[language];
   const [direction, setDirection] = useState(1);
   const [zoom, setZoom] = useState({ scale: 1, x: 0, y: 0 });
   const viewportRef = useRef(null);
@@ -260,6 +264,15 @@ export default function PhotoLightbox({
             `Select Photo for ${formatMoney(price, currency)}`
           )}
         </button>
+        {typeof onRequestRemoval === "function" && (
+          <button
+            type="button"
+            onClick={onRequestRemoval}
+            className="mt-3 block w-full text-center text-xs font-semibold text-neutral-500 underline"
+          >
+            {text.requestRemoval}
+          </button>
+        )}
       </div>
     </motion.div>
   );

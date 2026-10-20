@@ -156,8 +156,106 @@ for (const [label, name, args] of [
     hash_input: '0'.repeat(64),
     expiry_input: new Date().toISOString(),
   }],
+  ['List photo-removal requests as anon', 'admin_list_photo_removal_requests', {}],
+  ['Submit photo-removal RPC as anon', 'request_photo_removal', {
+    photo_id_input: photoId,
+    reason_input: null,
+    contact_input: null,
+    ip_hash_input: '0'.repeat(64),
+  }],
 ]) {
   await test(label, 'DENY', () => supabase.rpc(name, args))
+}
+
+await test(
+  'Reject malformed public photo-removal request',
+  'DENY',
+  () => supabase.functions.invoke('request-photo-removal', {
+    body: { photoId: 'not-a-uuid', reason: '', contact: '' },
+  }),
+  () => false,
+  (error) => Number(error?.context?.status ?? error?.status ?? error?.statusCode) === 400,
+)
+
+const unavailablePhotoId = process.env.AUDIT_UNAVAILABLE_PHOTO_ID
+if (unavailablePhotoId) {
+  if (!/^[0-9a-f-]{36}$/i.test(unavailablePhotoId)) {
+    results.push({
+      label: 'Reject hidden or expired photo-removal request',
+      status: 'FAIL',
+      detail: 'AUDIT_UNAVAILABLE_PHOTO_ID must be a UUID.',
+    })
+  } else {
+    const visibilityCheck = await supabase
+      .from('photos')
+      .select('id')
+      .eq('id', unavailablePhotoId)
+      .maybeSingle()
+    if (visibilityCheck.error || visibilityCheck.data) {
+      results.push({
+        label: 'Reject hidden or expired photo-removal request',
+        status: 'FAIL',
+        detail: visibilityCheck.error
+          ? `Could not verify fixture visibility: ${errorSummary(visibilityCheck.error)}`
+          : 'The supplied photo is public and was not submitted for removal.',
+      })
+    } else {
+      await test(
+        'Reject hidden or expired photo-removal request',
+        'DENY',
+        () => supabase.functions.invoke('request-photo-removal', {
+          body: { photoId: unavailablePhotoId, reason: '', contact: '' },
+        }),
+        () => false,
+        (error) => Number(error?.context?.status ?? error?.status ?? error?.statusCode) === 404,
+      )
+    }
+  }
+} else {
+  results.push({
+    label: 'Reject hidden or expired photo-removal request',
+    status: 'SKIP',
+    detail: 'Set AUDIT_UNAVAILABLE_PHOTO_ID to a hidden/expired staging photo UUID; this check does not alter the photo.',
+  })
+}
+results.push({
+  label: 'Photo-removal IP rate limit',
+  status: 'SKIP',
+  detail: 'Set AUDIT_ALLOW_MUTATING_REMOVALS=1 and 11 disposable visible staging photo UUIDs to exercise this limit.',
+})
+if (process.env.AUDIT_ALLOW_MUTATING_REMOVALS === '1') {
+  let photoIds
+  try {
+    photoIds = JSON.parse(process.env.AUDIT_REMOVAL_TEST_PHOTO_IDS || '[]')
+  } catch {
+    photoIds = []
+  }
+  if (!Array.isArray(photoIds) || photoIds.length !== 11 ||
+      photoIds.some((id) => typeof id !== 'string' || !/^[0-9a-f-]{36}$/i.test(id))) {
+    results.push({
+      label: 'Photo-removal IP rate limit staging test',
+      status: 'FAIL',
+      detail: 'AUDIT_REMOVAL_TEST_PHOTO_IDS must be a JSON array of exactly 11 disposable visible staging photo UUIDs.',
+    })
+  } else {
+    results.pop()
+    let accepted = 0
+    let rateLimited = false
+    for (const [index, id] of photoIds.entries()) {
+      const { data, error } = await supabase.functions.invoke('request-photo-removal', {
+        body: { photoId: id, reason: 'Automated staging rate-limit test', contact: '' },
+      })
+      const status = Number(error?.context?.status ?? error?.status ?? error?.statusCode)
+      if (index < 10 && data?.success && !error) accepted += 1
+      if (index === 10 && status === 429) rateLimited = true
+    }
+    const rateTestPassed = accepted === 10 && rateLimited
+    results.push({
+      label: 'Photo-removal IP rate limit staging test',
+      status: rateTestPassed ? 'PASS' : 'FAIL',
+      detail: `Accepted ${accepted}/10 requests; 11th request ${rateLimited ? 'was rate limited' : 'was not rate limited'}. The 10 fixtures are now hidden.`,
+    })
+  }
 }
 
 for (const [label, name] of [

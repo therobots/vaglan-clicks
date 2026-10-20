@@ -80,6 +80,45 @@ const removeObjects = async (
   }
 };
 
+const deletePhotoFiles = async (
+  client: ReturnType<typeof createClient>,
+  photoId: string,
+  supabaseUrl: string,
+) => {
+  const { data: photo, error: photoError } = await client
+    .from("photos")
+    .select("id, preview_url")
+    .eq("id", photoId)
+    .maybeSingle();
+  if (photoError) throw photoError;
+  if (!photo) return false;
+
+  const previewPath = getPreviewPath(photo.preview_url, supabaseUrl);
+  const { data: originalPath, error: originalError } = await client.rpc(
+    "get_photo_original_path",
+    { photo_id_input: photo.id },
+  );
+  if (originalError) throw originalError;
+  if (originalPath) {
+    const { error } = await client.storage.from(originalsBucket).remove([originalPath]);
+    if (error) throw error;
+  }
+  const { error: previewError } = await client.storage.from(previewBucket).remove([previewPath]);
+  if (previewError) throw previewError;
+  const { error: metadataError } = await client.rpc("delete_photo_original_path", {
+    photo_id_input: photo.id,
+  });
+  if (metadataError) throw metadataError;
+  const { error: deleteError } = await client.from("photos").delete().eq("id", photo.id);
+  if (deleteError) throw deleteError;
+  const { error: closeRequestsError } = await client.rpc(
+    "admin_close_photo_removal_requests",
+    { photo_id_input: photo.id },
+  );
+  if (closeRequestsError) throw closeRequestsError;
+  return true;
+};
+
 Deno.serve(async (request) => {
   if (request.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (request.method !== "POST") return respond({ error: "Method not allowed." }, 405);
@@ -197,7 +236,7 @@ Deno.serve(async (request) => {
       while (true) {
         const { data, error } = await client
           .from("photos")
-          .select("id, preview_url, filename, timestamp, is_free, is_hidden, expires_at")
+          .select("id, preview_url, filename, timestamp, created_at, is_free, is_hidden, expires_at")
           .order("timestamp", { ascending: false })
           .range(offset, offset + 999);
         if (error) throw error;
@@ -208,16 +247,139 @@ Deno.serve(async (request) => {
       return respond({ photos });
     }
 
-    if (action === "make-free" || action === "delete-photo") {
-      if (typeof payload.photoId !== "string" || !uuidPattern.test(payload.photoId)) {
+    if (action === "list-removals") {
+      const { data, error } = await client.rpc("admin_list_photo_removal_requests");
+      if (error) throw error;
+      return respond({ requests: data || [] });
+    }
+
+    if (action === "gallery-report") {
+      const { data, error } = await client.rpc("admin_gallery_report");
+      if (error) throw error;
+      return respond({ nights: data || [] });
+    }
+
+    if (action === "sales-report") {
+      const sales = [];
+      let offset = 0;
+      while (true) {
+        const { data, error } = await client
+          .rpc("admin_sales_report")
+          .range(offset, offset + 999);
+        if (error) throw error;
+        sales.push(...(data || []));
+        if (!data || data.length < 1000) break;
+        offset += data.length;
+      }
+      return respond({ sales });
+    }
+
+    if (action === "make-free-bulk") {
+      if (
+        !Array.isArray(payload.photoIds) ||
+        payload.photoIds.length < 1 ||
+        payload.photoIds.length > 100 ||
+        payload.photoIds.some((id: unknown) => typeof id !== "string" || !uuidPattern.test(id))
+      ) {
+        return respond({ error: "Select between 1 and 100 valid photos." }, 400);
+      }
+      const ids = [...new Set<string>(payload.photoIds)];
+      const { data, error } = await client
+        .from("photos")
+        .update({ is_free: true })
+        .in("id", ids)
+        .select("id");
+      if (error) throw error;
+      return respond({ success: true, updatedIds: (data || []).map((photo) => photo.id) });
+    }
+
+    if (action === "delete-photos-bulk") {
+      if (
+        !Array.isArray(payload.photoIds) ||
+        payload.photoIds.length < 1 ||
+        payload.photoIds.length > 100 ||
+        payload.photoIds.some((id: unknown) => typeof id !== "string" || !uuidPattern.test(id))
+      ) {
+        return respond({ error: "Select between 1 and 100 valid photos." }, 400);
+      }
+      const deletedIds: string[] = [];
+      const failures: { photoId: string; error: string }[] = [];
+      for (const photoId of [...new Set<string>(payload.photoIds)]) {
+        try {
+          if (await deletePhotoFiles(client, photoId, supabaseUrl)) deletedIds.push(photoId);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Photo deletion failed.";
+          failures.push({ photoId, error: message });
+        }
+      }
+      return respond({ success: failures.length === 0, deletedIds, failures });
+    }
+
+    if (action === "restore-removal") {
+      if (typeof payload.requestId !== "string" || !uuidPattern.test(payload.requestId)) {
+        return respond({ error: "Invalid removal request ID." }, 400);
+      }
+      const { data: restored, error } = await client.rpc("admin_restore_photo_removal", {
+        request_id_input: payload.requestId,
+      });
+      if (error) throw error;
+      if (!restored) return respond({ error: "The hidden photo can no longer be restored." }, 409);
+      const { data: requestRows, error: listError } = await client.rpc(
+        "admin_list_photo_removal_requests",
+      );
+      if (listError) throw listError;
+      const matched = (requestRows || []).find((item: { request_id: string }) =>
+        item.request_id === payload.requestId
+      );
+      if (matched?.photo_id) {
+        try {
+          const { error: broadcastError } = await client.channel("public:gallery-removals").send({
+            type: "broadcast",
+            event: "photo-restored",
+            payload: { photoId: matched.photo_id },
+          });
+          if (broadcastError) console.error("Photo restoration broadcast failed:", broadcastError);
+        } catch (broadcastError) {
+          console.error("Photo restoration broadcast failed:", broadcastError);
+        }
+      }
+      return respond({ success: true });
+    }
+
+    let photoId = payload.photoId;
+    if (action === "delete-removal") {
+      if (typeof payload.requestId !== "string" || !uuidPattern.test(payload.requestId)) {
+        return respond({ error: "Invalid removal request ID." }, 400);
+      }
+      const { data: requestRows, error: listError } = await client.rpc(
+        "admin_list_photo_removal_requests",
+      );
+      if (listError) throw listError;
+      const request = (requestRows || []).find((item: { request_id: string; status: string }) =>
+        item.request_id === payload.requestId && item.status === "pending"
+      );
+      if (!request) return respond({ error: "The pending removal request was not found." }, 404);
+      photoId = request.photo_id;
+    }
+
+    if (action === "make-free" || action === "delete-photo" || action === "delete-removal") {
+      if (typeof photoId !== "string" || !uuidPattern.test(photoId)) {
         return respond({ error: "Invalid photo ID." }, 400);
       }
       const { data: photo, error: photoError } = await client
         .from("photos")
         .select("id, preview_url, is_free")
-        .eq("id", payload.photoId)
+        .eq("id", photoId)
         .maybeSingle();
       if (photoError) throw photoError;
+      if (!photo && action === "delete-removal") {
+        const { data: marked, error: markError } = await client.rpc(
+          "admin_mark_photo_removal_deleted",
+          { request_id_input: payload.requestId },
+        );
+        if (markError) throw markError;
+        if (marked) return respond({ success: true });
+      }
       if (!photo) return respond({ error: "Photo no longer exists." }, 404);
 
       if (action === "make-free") {
@@ -229,24 +391,8 @@ Deno.serve(async (request) => {
         return respond({ success: true });
       }
 
-      const previewPath = getPreviewPath(photo.preview_url, supabaseUrl);
-      const { data: originalPath, error: originalError } = await client.rpc(
-        "get_photo_original_path",
-        { photo_id_input: photo.id },
-      );
-      if (originalError) throw originalError;
-      if (originalPath) {
-        const { error } = await client.storage.from(originalsBucket).remove([originalPath]);
-        if (error) throw error;
-      }
-      const { error: previewError } = await client.storage.from(previewBucket).remove([previewPath]);
-      if (previewError) throw previewError;
-      const { error: metadataError } = await client.rpc("delete_photo_original_path", {
-        photo_id_input: photo.id,
-      });
-      if (metadataError) throw metadataError;
-      const { error: deleteError } = await client.from("photos").delete().eq("id", photo.id);
-      if (deleteError) throw deleteError;
+      const deleted = await deletePhotoFiles(client, photo.id, supabaseUrl);
+      if (!deleted) return respond({ error: "Photo no longer exists." }, 404);
       return respond({ success: true });
     }
 

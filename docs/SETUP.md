@@ -18,7 +18,7 @@ Keep the dumps in a private backup location and do not commit them. Also create 
 
 ## Apply the migrations
 
-Review migration SQL against the captured schema, then apply migrations in timestamp order. `20261020000000_admin_timer_free_photos.sql` is additive for the existing gallery schema; `20261020091500_harden_public_gallery_access.sql` hardens public photo, legacy timer, and storage access; `20261020100000_stripe_checkout.sql` adds server-priced payment records; and `20261020110000_night_retention_and_gallery_queries.sql` adds Athens-night navigation, hidden/expiry fields, and read-only gallery RPCs. The migrations do not replace the `photos` table. The hardening migration moves the existing admin PIN hash from `public.gallery_state` into `private.gallery_admin_credentials`.
+Review migration SQL against the captured schema, then apply migrations in timestamp order. `20261020000000_admin_timer_free_photos.sql` is additive for the existing gallery schema; `20261020091500_harden_public_gallery_access.sql` hardens public photo, legacy timer, and storage access; `20261020100000_stripe_checkout.sql` adds server-priced payment records; `20261020110000_night_retention_and_gallery_queries.sql` adds Athens-night navigation, hidden/expiry fields, and read-only gallery RPCs; and `20261020120000_photo_removal_requests.sql` adds removal requests and expanded admin reports. The migrations do not replace the `photos` table. The hardening migration moves the existing admin PIN hash from `public.gallery_state` into `private.gallery_admin_credentials`.
 
 For production, have an authorized operator apply all reviewed active migration files in timestamp order through the Supabase Dashboard SQL Editor or the project's approved migration workflow. The checkout migration adds server-priced EUR orders and payment records; the gallery migration safely backfills missing expiry values to at least 48 hours from migration time. Verify `public.photos` still contains its existing rows and that existing rows have future `expires_at` values after migration.
 
@@ -28,7 +28,16 @@ The old migration is archived at `supabase\archive\20261019210000_gallery_securi
 
 ## Per-night expiry and scheduled purge
 
-The active gallery migration adds `photos.expires_at`, computed by a database trigger as 12:00 Europe/Athens on the day after the capture night plus `gallery_state.retention_hours` (default 48). Existing rows are backfilled safely. The old `gallery_state.timer_ends_at` column and timer RPCs remain for migration compatibility, but the public application and admin UI no longer use them.
+The active gallery migrations add `photos.expires_at`, computed by a database trigger as 12:00 Europe/Athens on the day after the capture night plus `gallery_state.retention_hours` (default 48), and private removal-request tracking. Existing rows are backfilled safely. The old `gallery_state.timer_ends_at` column and timer RPCs remain for migration compatibility, but the public application and admin UI no longer use them.
+
+The `20261020120000_photo_removal_requests.sql` migration adds immediate public soft-hiding, private removal requests, a ten-request-per-hour IP limit, an elevated-volume flag for more than twenty requests per hour, and service-role-only admin RPCs. Apply it after the night-retention migration, then deploy the request and admin functions:
+
+```powershell
+npx supabase functions deploy request-photo-removal --no-verify-jwt
+npx supabase functions deploy gallery-admin
+```
+
+Removal details and contact information are visible only in the PIN-protected admin dashboard and are erased when a request is restored or permanently resolved. The public app listens for photo-hide broadcasts and also reconciles visible photos every 30 seconds in case a client misses a broadcast. This migration and deployment are operator-controlled; do not apply them to production before the schema backup and review steps above.
 
 Purge is deliberately **dry-run only by default**. `gallery_state.purge_enabled` defaults to `false`; `purge-gallery` logs eligible photo, preview, and original counts without deleting. The function processes up to 500 expired photos per run. Paid originals are retained until the most recent associated `paid_at + paid_retention_days` (default 30 days); eligible previews and originals are removed before a photo row. Back up production and verify the behavior against staging data before enabling deletion.
 
@@ -108,6 +117,22 @@ notify pgrst, 'reload schema';
 
 Deploy `gallery-admin` to the same project as `VITE_SUPABASE_URL`. Edge Functions use Supabase's service-role secret internally; never expose that secret to the browser.
 
+## Publication and legal-review checklist
+
+The `/info` page contains an English/Greek overview, but its legal language is not a substitute for jurisdiction-specific legal advice. Before public sales, have a qualified lawyer review the service for Greece/EU and complete every operator-specific detail:
+
+- [ ] Add the photographer's legal name or business name, registered/contact address, and monitored privacy/support email.
+- [ ] Publish the data controller identity, contact method, purposes and legal bases for gallery, checkout, receipt delivery, fraud prevention, and removal-request processing.
+- [ ] Document categories of data, recipients/processors (including Supabase, Stripe, and any email provider), international transfers, retention periods, and how people exercise their rights or contact the relevant supervisory authority.
+- [ ] Confirm consent/notice requirements for photography at each venue, the lawful basis for publishing identifiable people, and a procedure for minors and sensitive situations.
+- [ ] Confirm cookie/local-storage disclosures and retention for the selected-photo cart and dismissed notice.
+- [ ] Publish pricing, taxes/VAT treatment, payment and delivery terms, cancellation/refund policy, and the correct consumer withdrawal-rights information for digital content.
+- [ ] Confirm copyright/licensing terms for purchased downloads, permitted use, and the process for intellectual-property or privacy complaints.
+- [ ] Test the removal-request process end to end, including immediate hiding, the ten-per-hour/IP limit, high-volume flagging, admin restoration, permanent deletion, and impact on previous paid downloads.
+- [ ] Replace or verify all explanatory placeholders on `/info`, in Stripe Checkout, and in receipt emails before launch.
+
+Do not treat a completed checklist as legal approval; obtain the required professional review and retain the reviewed policy versions.
+
 ## Required anon-access audit
 
 After applying migrations and deploying Edge Functions, run the anon-key security probe. It uses only the anon key. It checks public preview/pricing/time-navigation reads and denied writes. It does not invoke the mutating `reset_gallery_photos` RPC unless explicitly opted in:
@@ -123,6 +148,18 @@ Alternatively, put only those two Vite values in `.env.local`; the script reads 
 The gallery reset permission probe could mutate production state if its RPC is accidentally public. It is skipped by default for safety. Run it only against staging or after explicit approval, with a current backup, by setting `$env:AUDIT_ALLOW_MUTATING_RPCS = "1"` before running the script.
 
 The audit includes a dummy private-object download. A storage provider response that indicates the dummy path is merely missing rather than access denied is reported as a failure; confirm private bucket restrictions in the Supabase Dashboard and rerun with a known private-object path if needed.
+
+The removal checks verify that anonymous clients cannot call the private removal RPC, malformed IDs are rejected, and a supplied hidden/expired fixture is rejected without changing it. Set `AUDIT_UNAVAILABLE_PHOTO_ID` to a known hidden/expired UUID to run that fixture check. The IP-limit check is skipped by default. To exercise it, use a clean staging project and a fresh requester IP, create exactly 11 disposable visible fixture photos, and pass their UUIDs:
+
+```powershell
+$env:AUDIT_ALLOW_MUTATING_REMOVALS = "1"
+$env:AUDIT_REMOVAL_TEST_PHOTO_IDS = '["UUID-1","UUID-2","UUID-3","UUID-4","UUID-5","UUID-6","UUID-7","UUID-8","UUID-9","UUID-10","UUID-11"]'
+node scripts\audit-anon-access.mjs
+```
+
+This intentionally hides the first ten fixtures and verifies that request eleven is rate-limited. Never run it against production or real gallery photos.
+
+The Info page smoke test runs with Playwright and Vite; install Chromium once with `npx playwright install chromium`, then run `npm run test:e2e`. It checks the Info route, language switching and document `lang`, and navigation back to the gallery.
 
 ## Stripe checkout and secure downloads
 

@@ -14,3 +14,6 @@ verify_jwt = true
 
 [functions.purge-gallery]
 verify_jwt = false
+
+[functions.request-photo-removal]
+verify_jwt = false

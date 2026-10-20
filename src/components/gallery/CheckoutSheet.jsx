@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { X } from "lucide-react";
 import { formatMoney } from "@/lib/money";
 import TipSelector from "@/components/gallery/TipSelector";
+import { galleryText, useGalleryLanguage } from "@/lib/galleryLanguage";
 
 export default function CheckoutSheet({
   open,
@@ -19,6 +20,8 @@ export default function CheckoutSheet({
   onPay = null,
   checkoutEnabled = false,
 }) {
+  const language = useGalleryLanguage();
+  const text = galleryText[language];
   const canPay = checkoutEnabled && count > 0 && typeof onPay === "function" && !busy;
 
   const submit = (e) => {
@@ -117,7 +120,7 @@ export default function CheckoutSheet({
                 : "Secure checkout is not configured. No payment will be taken."}
             </p>
             <a href="/info" className="mt-3 block text-center text-xs font-semibold underline">
-              Photo information
+              {text.orderInfo}
             </a>
           </motion.form>
         </div>

@@ -9,8 +9,11 @@ import CartBar from '@/components/gallery/CartBar'
 import CheckoutSheet from '@/components/gallery/CheckoutSheet'
 import ExpiryBanner from '@/components/gallery/ExpiryBanner'
 import TimeFilterBar from '@/components/gallery/TimeFilterBar'
+import GalleryTabs from '@/components/gallery/GalleryTabs'
+import PhotoRemovalDialog from '@/components/gallery/PhotoRemovalDialog'
 import Watermark from '@/components/gallery/Watermark'
 import Admin from '@/pages/Admin'
+import Info from '@/pages/Info'
 import Success from '@/pages/Success'
 import { isSupabaseConfigured, supabase } from './supabaseClient'
 import { cacheCartSelection, readCartSelection, readCartTip } from '@/lib/orderSession'
@@ -31,9 +34,15 @@ import {
   mapGallerySlots,
   parseTimestamp,
 } from '@/lib/timeBuckets'
+import {
+  applyDocumentLanguage,
+  galleryText,
+  useGalleryLanguage,
+} from '@/lib/galleryLanguage'
 
 const CART_ID = 'public-gallery'
 const PAGE_SIZE = 60
+const NOTICE_KEY = 'vaglan-gallery-notice-dismissed'
 const isMissingPricingColumns = (error) =>
   error?.code === '42703' ||
   error?.code === 'PGRST204' ||
@@ -69,6 +78,8 @@ const groupPhotosByTime = (items) => {
 }
 
 function GalleryApp() {
+  const language = useGalleryLanguage()
+  const text = galleryText[language]
   const [photos, setPhotos] = useState([])
   const [nights, setNights] = useState([])
   const [activeNight, setActiveNight] = useState('')
@@ -96,7 +107,27 @@ function GalleryApp() {
   const [checkoutOpen, setCheckoutOpen] = useState(false)
   const [checkoutBusy, setCheckoutBusy] = useState(false)
   const [checkoutError, setCheckoutError] = useState('')
+  const [noticeDismissed, setNoticeDismissed] = useState(() => {
+    try {
+      return window.localStorage.getItem(NOTICE_KEY) === 'true'
+    } catch {
+      return false
+    }
+  })
+  const [removalPhoto, setRemovalPhoto] = useState(null)
+  const [removalBusy, setRemovalBusy] = useState(false)
+  const [removalError, setRemovalError] = useState('')
+  const [removalNotice, setRemovalNotice] = useState('')
   const pageRequestId = useRef(0)
+  const photosRef = useRef(photos)
+
+  useEffect(() => {
+    photosRef.current = photos
+  }, [photos])
+
+  useEffect(() => {
+    applyDocumentLanguage(language)
+  }, [language])
 
   useEffect(() => {
     cacheCartSelection(CART_ID, selectedIds, tipCents)
@@ -288,6 +319,56 @@ function GalleryApp() {
       active = false
     }
   }, [])
+
+  const hidePhoto = useCallback((photoId) => {
+    setPhotos((current) => current.filter((photo) => photo.id !== photoId))
+    setSelectedIds((current) => current.filter((id) => id !== photoId))
+    setActivePhoto((current) => (current?.id === photoId ? null : current))
+  }, [])
+
+  useEffect(() => {
+    if (!supabase) return undefined
+    const channel = supabase
+      .channel('public:gallery-removals')
+      .on('broadcast', { event: 'photo-hidden' }, ({ payload }) => {
+        if (typeof payload?.photoId === 'string') hidePhoto(payload.photoId)
+      })
+      .on('broadcast', { event: 'photo-restored' }, () => {
+        void loadPhotoPage({ append: false })
+      })
+      .subscribe()
+    return () => {
+      void supabase.removeChannel(channel)
+    }
+  }, [hidePhoto, loadPhotoPage])
+
+  useEffect(() => {
+    if (!supabase) return undefined
+    let active = true
+    const reconcileVisibility = async () => {
+      const ids = photosRef.current.map((photo) => photo.id).filter(Boolean)
+      if (!ids.length) return
+      const { data, error } = await supabase.from('photos').select('id').in('id', ids)
+      if (!active) return
+      if (error) {
+        setLoadError(`Could not refresh photo visibility: ${error.message}`)
+        return
+      }
+      const visibleIds = new Set((data || []).map((photo) => photo.id))
+      for (const photoId of ids) {
+        if (!visibleIds.has(photoId)) hidePhoto(photoId)
+      }
+    }
+    const interval = window.setInterval(() => {
+      reconcileVisibility().catch((error) => {
+        if (active) setLoadError(`Could not refresh photo visibility: ${error.message}`)
+      })
+    }, 30000)
+    return () => {
+      active = false
+      window.clearInterval(interval)
+    }
+  }, [hidePhoto])
 
   useEffect(() => {
     if (!supabase) return undefined
@@ -484,6 +565,38 @@ function GalleryApp() {
     }
   }
 
+  const requestPhotoRemoval = async ({ reason, contact }) => {
+    if (!supabase || !removalPhoto) return false
+    setRemovalBusy(true)
+    setRemovalError('')
+    try {
+      const { data, error } = await supabase.functions.invoke('request-photo-removal', {
+        body: { photoId: removalPhoto.id, reason, contact },
+      })
+      if (error) throw error
+      if (data?.error) throw new Error(data.error)
+      hidePhoto(removalPhoto.id)
+      setRemovalPhoto(null)
+      setRemovalNotice(text.removalSent)
+      return true
+    } catch (error) {
+      setRemovalError(await edgeFunctionErrorMessage(error, text.removalFailed))
+      return false
+    } finally {
+      setRemovalBusy(false)
+    }
+  }
+
+  const dismissNotice = () => {
+    try {
+      window.localStorage.setItem(NOTICE_KEY, 'true')
+    } catch {
+      setNoticeDismissed(true)
+      return
+    }
+    setNoticeDismissed(true)
+  }
+
   const startCheckout = async () => {
     if (!supabase || selectedIds.length === 0) return
     setCheckoutBusy(true)
@@ -514,6 +627,24 @@ function GalleryApp() {
       </GalleryHeader>
 
       <main className="mx-auto max-w-3xl pt-16">
+        <GalleryTabs active="photos" />
+        {!noticeDismissed && (
+          <aside className="flex items-start justify-between gap-4 border-b border-blue-100 bg-blue-50 px-4 py-3">
+            <div>
+              <h2 className="text-xs font-bold">{text.noticeTitle}</h2>
+              <p className="mt-1 text-xs leading-5 text-neutral-700">{text.noticeText}</p>
+              <a href="/info" className="mt-1 inline-block text-xs font-semibold underline">{text.photoInfo}</a>
+            </div>
+            <button type="button" onClick={dismissNotice} className="shrink-0 rounded-lg bg-white px-3 py-2 text-xs font-bold">
+              {text.dismiss}
+            </button>
+          </aside>
+        )}
+        {removalNotice && (
+          <p role="status" className="border-b border-emerald-200 bg-emerald-50 px-4 py-3 text-center text-xs text-emerald-900">
+            {removalNotice}
+          </p>
+        )}
         <ExpiryBanner
           expiresAt={activeNightData?.expires_at}
           serverOffsetMs={serverOffsetMs}
@@ -697,7 +828,7 @@ function GalleryApp() {
           </>
         )}
 
-        <GalleryFooter />
+        <GalleryFooter language={language} />
       </main>
 
       <AnimatePresence>
@@ -749,10 +880,22 @@ function GalleryApp() {
             onPrev={() => setActivePhoto(photos[activePhotoIndex - 1])}
             onNext={() => setActivePhoto(photos[activePhotoIndex + 1])}
             onToggle={() => toggleSelected(activePhoto.id)}
+            onRequestRemoval={() => {
+              setRemovalPhoto(activePhoto)
+              setRemovalError('')
+            }}
             onClose={() => setActivePhoto(null)}
           />
         )}
       </AnimatePresence>
+      <PhotoRemovalDialog
+        open={Boolean(removalPhoto)}
+        language={language}
+        busy={removalBusy}
+        error={removalError}
+        onClose={() => setRemovalPhoto(null)}
+        onSubmit={requestPhotoRemoval}
+      />
     </div>
   )
 }
@@ -761,5 +904,10 @@ export default function App() {
   const pathname = window.location.pathname.replace(/\/+$/, '')
   if (pathname === '/admin') return <Admin />
   if (pathname === '/success') return <Success />
+  if (pathname === '/info') return <Info />
+  if (pathname.startsWith('/orders/')) {
+    const token = pathname.slice('/orders/'.length)
+    return <Success orderToken={token} />
+  }
   return <GalleryApp />
 }

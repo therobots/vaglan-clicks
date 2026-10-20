@@ -3,18 +3,25 @@ import { CheckCircle2, Download, LoaderCircle } from "lucide-react";
 import { supabase } from "@/supabaseClient";
 import { cacheCartSelection } from "@/lib/orderSession";
 import { edgeFunctionErrorMessage } from "@/lib/edgeFunctionError";
+import { applyDocumentLanguage, galleryText, useGalleryLanguage } from "@/lib/galleryLanguage";
 
 const pollingIntervalMs = 3000;
 const maximumPolls = 20;
 
-export default function Success() {
+export default function Success({ orderToken = "" }) {
+  const language = useGalleryLanguage();
+  const text = galleryText[language];
   const query = new URLSearchParams(window.location.search);
   const sessionId = query.get("session_id") || "";
-  const token = query.get("token") || "";
+  const token = orderToken || query.get("token") || "";
   const [downloads, setDownloads] = useState([]);
   const [status, setStatus] = useState("loading");
   const [error, setError] = useState("");
   const [refreshCount, setRefreshCount] = useState(0);
+
+  useEffect(() => {
+    applyDocumentLanguage(language);
+  }, [language]);
 
   useEffect(() => {
     let active = true;
@@ -97,6 +104,9 @@ export default function Success() {
           <p className="mt-2 text-xs text-neutral-500">
             A backup download link is also emailed to the address provided at checkout.
           </p>
+          <a href="/info" className="mt-3 inline-block text-xs font-semibold underline">
+            {text.successInfo}
+          </a>
         </div>
 
         {status === "loading" || status === "processing" ? (
