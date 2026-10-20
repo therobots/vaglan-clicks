@@ -2,19 +2,15 @@ import React, { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { X } from "lucide-react";
 import { formatMoney } from "@/lib/money";
-import TipSelector from "@/components/gallery/TipSelector";
 
 export default function CheckoutSheet({
   open,
   count,
-  subtotal,
-  tip,
   amount,
   currency,
   busy,
   payError = "",
   onClose,
-  onTipChange,
   onPay = null,
   checkoutEnabled = false,
 }) {
@@ -66,7 +62,7 @@ export default function CheckoutSheet({
               <div>
                 <h2 className="text-xl font-black tracking-tight text-black">Checkout</h2>
                 <p className="mt-0.5 text-[13px] text-black/50">
-                  {count} {count === 1 ? "photo" : "photos"} · {formatMoney(subtotal, currency)}
+                  {count} {count === 1 ? "photo" : "photos"} · {formatMoney(amount, currency)}
                 </p>
               </div>
               <button
@@ -80,10 +76,11 @@ export default function CheckoutSheet({
               </button>
             </div>
 
-            <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.08em] text-black/60">
+            <label htmlFor="checkout-email" className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.08em] text-black/60">
               Email for backup links
             </label>
             <input
+              id="checkout-email"
               type="email"
               inputMode="email"
               autoComplete="email"
@@ -97,26 +94,12 @@ export default function CheckoutSheet({
               <p className="mt-2 text-[12px] font-medium text-red-600">{error || payError}</p>
             )}
 
-            <TipSelector tip={tip} currency={currency} busy={!canPay} onSelect={onTipChange} />
-
             <div className="mt-4 border-t border-[#E5E7EB] pt-4">
               <div className="flex items-center justify-between text-[13px] font-semibold text-black/60">
                 <span>
                   {count} {count === 1 ? "photo" : "photos"}
                 </span>
-                <span>{formatMoney(subtotal, currency)}</span>
-              </div>
-              {tip > 0 && (
-                <div className="mt-1.5 flex items-center justify-between text-[13px] font-semibold text-black/60">
-                  <span>Tip for @vaglan_clicks</span>
-                  <span>+{formatMoney(tip, currency)}</span>
-                </div>
-              )}
-              <div className="mt-3 flex items-center justify-between border-t border-[#E5E7EB] pt-3">
-                <span className="text-[13px] font-semibold text-black/60">Total</span>
-                <span className="text-xl font-black tracking-tight text-black">
-                  {formatMoney(amount, currency)}
-                </span>
+                <span>{formatMoney(amount, currency)}</span>
               </div>
             </div>
 

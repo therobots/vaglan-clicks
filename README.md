@@ -16,14 +16,14 @@ A live event-photo gallery built with React, Vite, and Supabase.
 
    Use the project URL and **anon/public** key from the Supabase dashboard. Never put a service-role key in frontend configuration.
 
-4. Back up the existing Supabase database, then follow [`docs/SETUP.md`](./docs/SETUP.md) to review/apply migrations in timestamp order. Do not apply the archived `20261019210000_gallery_security.sql`; it assumes a different `photos` schema. The active migrations preserve existing photo rows and harden public access.
+4. Back up the existing Supabase database, then follow [`docs/SETUP.md`](./docs/SETUP.md) to review/apply active migrations in timestamp order. Do not apply the archived `20261019210000_gallery_security.sql`; it assumes a different `photos` schema. The active migrations preserve existing photo rows, harden public access, and add server-priced order/payment records.
 5. Run `npm run dev` and open the local URL printed by Vite.
 
 Without valid Supabase settings, the app displays a configuration message rather than making requests to placeholder credentials. Set `VITE_INSTAGRAM_HANDLE` to change the gallery footer profile; the default is `vaglan_clicks`. Run `npm run lint` and `npm run build` to check the frontend.
 
 ## Gallery and pricing
 
-The gallery displays watermarked, blurred previews in a three-column mobile grid. Visitors can filter by hour, select photos for €2.00 for the first photo and €0.50 for each additional photo in the selection, and preview them in a full-screen lightbox. Checkout is not available in the frontend-only setup selected for this project.
+The gallery displays watermarked, blurred previews in a three-column mobile grid. Visitors can filter by hour, select photos for the server-configured price (currently €3.00 per photo), and preview them in a full-screen lightbox.
 
 ## Admin and free-photo setup
 
@@ -53,4 +53,6 @@ Public free-photo downloads are issued as short-lived signed URLs only after the
 
 ## Payments
 
-Checkout and post-payment downloads are intentionally unavailable until a trusted payment backend is configured. The browser must not mark an order paid or unlock original photos; payment creation, Stripe webhook verification, and original-photo signed URL issuance must happen on a server. High-resolution originals belong in the private `photo-originals` bucket, with their object paths in `private.photo_originals`; never store original paths in the public `photos` table or expose a service-role key to the browser.
+The Stripe flow is implemented with Supabase Edge Functions. Before enabling it, an authorized operator must back up the database and Storage, review and apply the active migrations in order, and configure the secrets and Stripe webhook described in [`docs/SETUP.md`](./docs/SETUP.md). Run Stripe test-mode purchases before accepting live payments.
+
+The browser never sets the price or marks an order paid. The price comes from `public.gallery_state.price_cents`; Stripe webhook signature verification marks the order paid, and `order-downloads` issues 15-minute signed URLs from the private `photo-originals` bucket. Original object paths remain private in `private.photo_originals` and paid-order records. A receipt email provider is configured server-side; do not expose Stripe, Resend, or Supabase service-role secrets in Vite variables.

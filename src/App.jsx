@@ -5,11 +5,15 @@ import GalleryFooter from '@/components/gallery/GalleryFooter'
 import GalleryHeader from '@/components/gallery/GalleryHeader'
 import LiveStatusPill from '@/components/gallery/LiveStatusPill'
 import PhotoLightbox from '@/components/gallery/PhotoLightbox'
+import CartBar from '@/components/gallery/CartBar'
+import CheckoutSheet from '@/components/gallery/CheckoutSheet'
 import Watermark from '@/components/gallery/Watermark'
 import Admin from '@/pages/Admin'
+import Success from '@/pages/Success'
 import { isSupabaseConfigured, supabase } from './supabaseClient'
 import { cacheCartSelection, readCartSelection } from '@/lib/orderSession'
-import { DEFAULT_FIRST_PRICE, nextPhotoPrice, selectionSubtotal } from '@/lib/pricing'
+import { edgeFunctionErrorMessage } from '@/lib/edgeFunctionError'
+import { DEFAULT_PHOTO_PRICE, nextPhotoPrice, photoPrice, selectionSubtotal } from '@/lib/pricing'
 import { parseTimestamp } from '@/lib/timeBuckets'
 
 const CART_ID = 'public-gallery'
@@ -31,6 +35,11 @@ const isMissingGalleryStateTable = (error) =>
   error?.code === 'PGRST205' ||
   (String(error?.message || '').includes('gallery_state') &&
     /table|schema cache|could not find/i.test(String(error?.message || '')))
+const isMissingPricingColumns = (error) =>
+  error?.code === '42703' ||
+  error?.code === 'PGRST204' ||
+  (/price_cents|currency/i.test(String(error?.message || '')) &&
+    /column|schema cache/i.test(String(error?.message || '')))
 
 const photoTime = (value) => {
   if (typeof value === 'string' && /^\d+(?:\.\d+)?$/.test(value.trim())) {
@@ -69,6 +78,9 @@ function GalleryApp() {
   const [activeFilter, setActiveFilter] = useState('ALL')
   const [activePhoto, setActivePhoto] = useState(null)
   const [timerEndsAt, setTimerEndsAt] = useState(null)
+  const [priceCents, setPriceCents] = useState(DEFAULT_PHOTO_PRICE * 100)
+  const [currency, setCurrency] = useState('EUR')
+  const [priceConfigured, setPriceConfigured] = useState(false)
   const [timerAvailable, setTimerAvailable] = useState(true)
   const [schemaNotice, setSchemaNotice] = useState('')
   const [now, setNow] = useState(Date.now())
@@ -78,6 +90,9 @@ function GalleryApp() {
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [connectionStatus, setConnectionStatus] = useState('connecting')
+  const [checkoutOpen, setCheckoutOpen] = useState(false)
+  const [checkoutBusy, setCheckoutBusy] = useState(false)
+  const [checkoutError, setCheckoutError] = useState('')
 
   useEffect(() => {
     cacheCartSelection(CART_ID, selectedIds)
@@ -137,9 +152,28 @@ function GalleryApp() {
           : legacySchemaResult
       }
 
+      const timerRequest = async () => {
+        const currentResult = await supabase
+          .from('gallery_state')
+          .select('timer_ends_at, price_cents, currency')
+          .eq('id', 1)
+          .maybeSingle()
+        if (!currentResult.error || !isMissingPricingColumns(currentResult.error)) {
+          return currentResult
+        }
+        setSchemaNotice(
+          'Server-side photo pricing is not enabled yet. Apply the latest Supabase migration before checkout.',
+        )
+        return supabase
+          .from('gallery_state')
+          .select('timer_ends_at')
+          .eq('id', 1)
+          .maybeSingle()
+      }
+
       const [photoResult, timerResult] = await Promise.all([
         photoRequest(),
-        supabase.from('gallery_state').select('timer_ends_at').eq('id', 1).maybeSingle(),
+        timerRequest(),
       ])
 
       if (!active) return
@@ -165,6 +199,24 @@ function GalleryApp() {
       } else {
         setTimerAvailable(true)
         setTimerEndsAt(timerResult.data?.timer_ends_at || null)
+        const currentPrice = timerResult.data && 'price_cents' in timerResult.data
+          ? Number(timerResult.data.price_cents)
+          : Number.NaN
+        if (Number.isSafeInteger(currentPrice) && currentPrice > 0) {
+          setPriceCents(currentPrice)
+        }
+        if (
+          Number.isSafeInteger(currentPrice) &&
+          currentPrice > 0 &&
+          timerResult.data &&
+          'currency' in timerResult.data &&
+          timerResult.data.currency === 'EUR'
+        ) {
+          setCurrency('EUR')
+          setPriceConfigured(true)
+        } else {
+          setPriceConfigured(false)
+        }
         setTimerError('')
       }
       setLoadError('')
@@ -275,10 +327,11 @@ function GalleryApp() {
   const activePhotoIndex = activePhoto
     ? visiblePhotos.findIndex((photo) => photo.id === activePhoto.id)
     : -1
-  const total = selectionSubtotal(selectedCount, DEFAULT_FIRST_PRICE)
+  const unitPrice = photoPrice(priceCents / 100)
+  const total = selectionSubtotal(selectedCount, unitPrice)
   const formattedTotal = new Intl.NumberFormat('en-IE', {
     style: 'currency',
-    currency: 'EUR',
+    currency,
   }).format(total)
   const remainingSeconds = timerEndsAt
     ? Math.max(0, Math.floor((parseTimestamp(timerEndsAt) - now) / 1000))
@@ -323,6 +376,29 @@ function GalleryApp() {
       setDownloadError(error.message || 'Could not prepare the free photo download.')
     } finally {
       setDownloadingPhotoId(null)
+    }
+  }
+
+  const startCheckout = async (email) => {
+    if (!supabase || selectedIds.length === 0) return
+    setCheckoutBusy(true)
+    setCheckoutError('')
+    try {
+      const { data, error } = await supabase.functions.invoke('create-checkout-session', {
+        body: { photoIds: selectedIds, email },
+      })
+      if (error) throw error
+      if (data?.error) throw new Error(data.error)
+      if (typeof data?.url !== 'string' || !data.url.startsWith('https://checkout.stripe.com/')) {
+        throw new Error('The secure Stripe checkout link was not returned.')
+      }
+      window.location.assign(data.url)
+    } catch (error) {
+      setCheckoutError(
+        await edgeFunctionErrorMessage(error, 'Could not open secure checkout. Please try again.'),
+      )
+    } finally {
+      setCheckoutBusy(false)
     }
   }
 
@@ -436,35 +512,31 @@ function GalleryApp() {
         <GalleryFooter />
       </main>
 
-      <aside
-        aria-label="Selected photos and checkout"
-        aria-hidden={selectedCount === 0}
-        className={`fixed inset-x-0 bottom-0 z-40 border-t border-gray-200 bg-white/95 px-4 pt-3 shadow-[0_-8px_30px_rgba(0,0,0,0.08)] backdrop-blur transition-transform duration-300 ease-out ${
-          selectedCount > 0 ? 'translate-y-0' : 'pointer-events-none translate-y-full'
-        }`}
-        style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 0.75rem)' }}
-      >
-        <div className="mx-auto flex max-w-3xl items-center justify-between gap-3">
-          <div className="min-w-0">
-            <p className="truncate text-xs font-medium text-neutral-500">
-              {selectedCount} {selectedCount === 1 ? 'Photo' : 'Photos'}
-            </p>
-            <p className="text-base font-bold tabular-nums">{formattedTotal}</p>
-          </div>
-          <button
-            type="button"
-            disabled
-            aria-describedby="checkout-unavailable-note"
-            title="Secure checkout is not configured yet"
-            className="shrink-0 rounded-xl bg-blue-600 px-5 py-3 text-sm font-bold text-white opacity-55"
-          >
-            Checkout →
-          </button>
-        </div>
-        <p id="checkout-unavailable-note" className="sr-only">
-          Checkout is unavailable until secure payment verification is configured.
-        </p>
-      </aside>
+      <AnimatePresence>
+        {selectedCount > 0 && (
+          <CartBar
+            count={selectedCount}
+            amount={total}
+            currency={currency}
+            onCheckout={() => {
+              setCheckoutError('')
+              setCheckoutOpen(true)
+            }}
+          />
+        )}
+      </AnimatePresence>
+
+      <CheckoutSheet
+        open={checkoutOpen}
+        count={selectedCount}
+        amount={total}
+        currency={currency}
+        busy={checkoutBusy}
+        payError={checkoutError}
+        onClose={() => setCheckoutOpen(false)}
+        onPay={startCheckout}
+        checkoutEnabled={isSupabaseConfigured && priceConfigured}
+      />
 
       <AnimatePresence>
         {activePhoto && activePhotoIndex >= 0 && (
@@ -475,8 +547,8 @@ function GalleryApp() {
             isDownloading={downloadingPhotoId === activePhoto.id}
             downloadError={downloadError}
             onDownloadFree={() => downloadFreePhoto(activePhoto)}
-            price={nextPhotoPrice(selectedCount, DEFAULT_FIRST_PRICE)}
-            currency="EUR"
+            price={nextPhotoPrice(selectedCount, unitPrice)}
+            currency={currency}
             hasPrev={activePhotoIndex > 0}
             hasNext={activePhotoIndex < visiblePhotos.length - 1}
             onPrev={() => setActivePhoto(visiblePhotos[activePhotoIndex - 1])}
@@ -491,5 +563,8 @@ function GalleryApp() {
 }
 
 export default function App() {
-  return window.location.pathname.replace(/\/+$/, '') === '/admin' ? <Admin /> : <GalleryApp />
+  const pathname = window.location.pathname.replace(/\/+$/, '')
+  if (pathname === '/admin') return <Admin />
+  if (pathname === '/success') return <Success />
+  return <GalleryApp />
 }
