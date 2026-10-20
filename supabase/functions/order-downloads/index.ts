@@ -104,7 +104,9 @@ Deno.serve(async (request) => {
     return respond({
       status: order.status,
       currency: order.currency,
-      amountTotalCents: order.amount_total_cents,
+      subtotalCents: order.subtotal_cents,
+      tipCents: order.tip_cents,
+      totalCents: order.total_cents,
       items,
     });
   } catch (error) {

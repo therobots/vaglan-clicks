@@ -23,7 +23,7 @@ Without valid Supabase settings, the app displays a configuration message rather
 
 ## Gallery and pricing
 
-The gallery displays watermarked, blurred previews in a three-column mobile grid. Visitors can filter by hour, select photos for the server-configured price (currently €3.00 per photo), and preview them in a full-screen lightbox.
+The gallery displays watermarked, blurred previews in a three-column mobile grid. Visitors can filter by hour, select photos for €2.00 for the first photo and €0.50 for each additional photo in the checkout, optionally add a €0/€1/€2/€3 tip, and preview them in a full-screen lightbox.
 
 ## Admin and free-photo setup
 
@@ -55,4 +55,4 @@ Public free-photo downloads are issued as short-lived signed URLs only after the
 
 The Stripe flow is implemented with Supabase Edge Functions. Before enabling it, an authorized operator must back up the database and Storage, review and apply the active migrations in order, and configure the secrets and Stripe webhook described in [`docs/SETUP.md`](./docs/SETUP.md). Run Stripe test-mode purchases before accepting live payments.
 
-The browser never sets the price or marks an order paid. The price comes from `public.gallery_state.price_cents`; Stripe webhook signature verification marks the order paid, and `order-downloads` issues 15-minute signed URLs from the private `photo-originals` bucket. Original object paths remain private in `private.photo_originals` and paid-order records. A receipt email provider is configured server-side; do not expose Stripe, Resend, or Supabase service-role secrets in Vite variables.
+The browser never sets the price or marks an order paid. Prices and allowed tips come from server-side gallery settings; Stripe webhook signature verification marks the order paid, and `order-downloads` issues 15-minute signed URLs from the private `photo-originals` bucket. Original object paths remain private in `private.photo_originals` and paid-order records. Stripe Checkout collects the customer email. A receipt email provider is configured server-side; do not expose Stripe, Resend, or Supabase service-role secrets in Vite variables.

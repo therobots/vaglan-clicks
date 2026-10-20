@@ -42,7 +42,7 @@ const sendReceiptEmail = async (
       from,
       to: [recipient],
       subject: "Your Vaglan Clicks photos are ready",
-      html: `<p>Thank you for your purchase.</p><p><a href="${downloadUrl}">Open your secure photo downloads</a></p><p>This link grants access to your purchased photos. Keep it private.</p>`,
+      html: `<p>Thank you for your purchase.</p><p><a href="${downloadUrl}">Open your secure photo downloads</a></p><p>This link grants access to your purchased photos. Keep it private.</p><p><a href="${new URL("/info", downloadUrl).toString()}">Photo information</a></p>`,
     }),
   });
   if (!response.ok) {

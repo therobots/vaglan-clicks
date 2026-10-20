@@ -11,9 +11,16 @@ import Watermark from '@/components/gallery/Watermark'
 import Admin from '@/pages/Admin'
 import Success from '@/pages/Success'
 import { isSupabaseConfigured, supabase } from './supabaseClient'
-import { cacheCartSelection, readCartSelection } from '@/lib/orderSession'
+import { cacheCartSelection, readCartSelection, readCartTip } from '@/lib/orderSession'
 import { edgeFunctionErrorMessage } from '@/lib/edgeFunctionError'
-import { DEFAULT_PHOTO_PRICE, nextPhotoPrice, photoPrice, selectionSubtotal } from '@/lib/pricing'
+import {
+  DEFAULT_FIRST_PRICE,
+  EXTRA_PHOTO_PRICE,
+  TIP_OPTIONS_CENTS,
+  isAllowedTip,
+  nextPhotoPrice,
+  selectionSubtotal,
+} from '@/lib/pricing'
 import { parseTimestamp } from '@/lib/timeBuckets'
 
 const CART_ID = 'public-gallery'
@@ -38,7 +45,7 @@ const isMissingGalleryStateTable = (error) =>
 const isMissingPricingColumns = (error) =>
   error?.code === '42703' ||
   error?.code === 'PGRST204' ||
-  (/price_cents|currency/i.test(String(error?.message || '')) &&
+  (/(first_photo_cents|extra_photo_cents|tip_options_cents|currency)/i.test(String(error?.message || '')) &&
     /column|schema cache/i.test(String(error?.message || '')))
 
 const photoTime = (value) => {
@@ -75,12 +82,15 @@ const sortPhotos = (items) =>
 function GalleryApp() {
   const [photos, setPhotos] = useState([])
   const [selectedIds, setSelectedIds] = useState(() => readCartSelection(CART_ID))
+  const [tipCents, setTipCents] = useState(() => readCartTip(CART_ID))
   const [activeFilter, setActiveFilter] = useState('ALL')
   const [activePhoto, setActivePhoto] = useState(null)
   const [timerEndsAt, setTimerEndsAt] = useState(null)
-  const [priceCents, setPriceCents] = useState(DEFAULT_PHOTO_PRICE * 100)
+  const [firstPhotoCents, setFirstPhotoCents] = useState(DEFAULT_FIRST_PRICE * 100)
+  const [extraPhotoCents, setExtraPhotoCents] = useState(EXTRA_PHOTO_PRICE * 100)
+  const [tipOptionsCents, setTipOptionsCents] = useState(TIP_OPTIONS_CENTS)
   const [currency, setCurrency] = useState('EUR')
-  const [priceConfigured, setPriceConfigured] = useState(false)
+  const [pricingConfigured, setPricingConfigured] = useState(false)
   const [timerAvailable, setTimerAvailable] = useState(true)
   const [schemaNotice, setSchemaNotice] = useState('')
   const [now, setNow] = useState(Date.now())
@@ -95,8 +105,8 @@ function GalleryApp() {
   const [checkoutError, setCheckoutError] = useState('')
 
   useEffect(() => {
-    cacheCartSelection(CART_ID, selectedIds)
-  }, [selectedIds])
+    cacheCartSelection(CART_ID, selectedIds, tipCents)
+  }, [selectedIds, tipCents])
 
   useEffect(() => {
     if (!activePhoto) return undefined
@@ -155,7 +165,7 @@ function GalleryApp() {
       const timerRequest = async () => {
         const currentResult = await supabase
           .from('gallery_state')
-          .select('timer_ends_at, price_cents, currency')
+          .select('timer_ends_at, first_photo_cents, extra_photo_cents, tip_options_cents, currency')
           .eq('id', 1)
           .maybeSingle()
         if (!currentResult.error || !isMissingPricingColumns(currentResult.error)) {
@@ -199,23 +209,27 @@ function GalleryApp() {
       } else {
         setTimerAvailable(true)
         setTimerEndsAt(timerResult.data?.timer_ends_at || null)
-        const currentPrice = timerResult.data && 'price_cents' in timerResult.data
-          ? Number(timerResult.data.price_cents)
-          : Number.NaN
-        if (Number.isSafeInteger(currentPrice) && currentPrice > 0) {
-          setPriceCents(currentPrice)
-        }
-        if (
-          Number.isSafeInteger(currentPrice) &&
-          currentPrice > 0 &&
-          timerResult.data &&
-          'currency' in timerResult.data &&
-          timerResult.data.currency === 'EUR'
-        ) {
+        const firstPrice = Number(timerResult.data?.first_photo_cents)
+        const extraPrice = Number(timerResult.data?.extra_photo_cents)
+        const configuredTips = timerResult.data?.tip_options_cents
+        const validTips =
+          Array.isArray(configuredTips) &&
+          configuredTips.length === TIP_OPTIONS_CENTS.length &&
+          configuredTips.every((tip, index) => tip === TIP_OPTIONS_CENTS[index])
+        const validPricing =
+          Number.isSafeInteger(firstPrice) &&
+          firstPrice > 0 &&
+          Number.isSafeInteger(extraPrice) &&
+          extraPrice >= 0 &&
+          validTips &&
+          timerResult.data?.currency === 'EUR'
+        setPricingConfigured(Boolean(validPricing))
+        if (validPricing) {
+          setFirstPhotoCents(firstPrice)
+          setExtraPhotoCents(extraPrice)
+          setTipOptionsCents(configuredTips)
           setCurrency('EUR')
-          setPriceConfigured(true)
-        } else {
-          setPriceConfigured(false)
+          setTipCents((current) => (isAllowedTip(current, configuredTips) ? current : 0))
         }
         setTimerError('')
       }
@@ -327,8 +341,11 @@ function GalleryApp() {
   const activePhotoIndex = activePhoto
     ? visiblePhotos.findIndex((photo) => photo.id === activePhoto.id)
     : -1
-  const unitPrice = photoPrice(priceCents / 100)
-  const total = selectionSubtotal(selectedCount, unitPrice)
+  const firstPhotoPrice = firstPhotoCents / 100
+  const extraPhotoPrice = extraPhotoCents / 100
+  const subtotal = selectionSubtotal(selectedCount, firstPhotoPrice, extraPhotoPrice)
+  const safeTipCents = isAllowedTip(tipCents, tipOptionsCents) ? tipCents : 0
+  const total = subtotal + safeTipCents / 100
   const formattedTotal = new Intl.NumberFormat('en-IE', {
     style: 'currency',
     currency,
@@ -379,13 +396,13 @@ function GalleryApp() {
     }
   }
 
-  const startCheckout = async (email) => {
+  const startCheckout = async () => {
     if (!supabase || selectedIds.length === 0) return
     setCheckoutBusy(true)
     setCheckoutError('')
     try {
       const { data, error } = await supabase.functions.invoke('create-checkout-session', {
-        body: { photoIds: selectedIds, email },
+        body: { photoIds: selectedIds, tipCents: safeTipCents },
       })
       if (error) throw error
       if (data?.error) throw new Error(data.error)
@@ -529,13 +546,19 @@ function GalleryApp() {
       <CheckoutSheet
         open={checkoutOpen}
         count={selectedCount}
-        amount={total}
+        subtotal={subtotal}
+        tipCents={safeTipCents}
+        tipOptionsCents={tipOptionsCents}
+        total={total}
         currency={currency}
         busy={checkoutBusy}
         payError={checkoutError}
         onClose={() => setCheckoutOpen(false)}
+        onTipChange={(nextTip) =>
+          setTipCents(isAllowedTip(nextTip, tipOptionsCents) ? nextTip : 0)
+        }
         onPay={startCheckout}
-        checkoutEnabled={isSupabaseConfigured && priceConfigured}
+        checkoutEnabled={isSupabaseConfigured && pricingConfigured}
       />
 
       <AnimatePresence>
@@ -547,7 +570,7 @@ function GalleryApp() {
             isDownloading={downloadingPhotoId === activePhoto.id}
             downloadError={downloadError}
             onDownloadFree={() => downloadFreePhoto(activePhoto)}
-            price={nextPhotoPrice(selectedCount, unitPrice)}
+            price={nextPhotoPrice(selectedCount, firstPhotoPrice, extraPhotoPrice)}
             currency={currency}
             hasPrev={activePhotoIndex > 0}
             hasNext={activePhotoIndex < visiblePhotos.length - 1}

@@ -1,4 +1,8 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
+import {
+  buildCheckoutLineItems,
+  validateCheckoutSelection,
+} from "../../../src/lib/pricing.js";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -57,29 +61,29 @@ Deno.serve(async (request) => {
   let createdOrderId: string | null = null;
   try {
     const payload = await request.json();
-    if (!Array.isArray(payload?.photoIds) || payload.photoIds.length < 1) {
-      return respond({ error: "Select at least one photo to continue." }, 400);
-    }
-    if (payload.photoIds.length > 100 || payload.photoIds.some((id: unknown) =>
+    if (!Array.isArray(payload?.photoIds) || payload.photoIds.length > 100 || payload.photoIds.some((id: unknown) =>
       typeof id !== "string" || !uuidPattern.test(id)
     )) {
       return respond({ error: "Your selection is invalid. Please review it and try again." }, 400);
     }
     const photoIds = [...new Set<string>(payload.photoIds)];
-    if (photoIds.length > 100) {
-      return respond({ error: "Select no more than 100 photos per checkout." }, 400);
-    }
-    if (
-      typeof payload.email !== "string" ||
-      payload.email.length > 254 ||
-      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(payload.email.trim())
-    ) {
-      return respond({ error: "Enter a valid email address for your download receipt." }, 400);
+    if (!validateCheckoutSelection(photoIds, payload.tipCents)) {
+      return respond(
+        {
+          error: photoIds.length === 0
+            ? "Select at least one photo to continue."
+            : "Choose one of the available tip amounts.",
+        },
+        400,
+      );
     }
 
     const { data: orderRows, error: orderError } = await client.rpc(
       "create_pending_photo_order",
-      { photo_ids_input: photoIds },
+      {
+        photo_ids_input: photoIds,
+        tip_cents_input: payload.tipCents,
+      },
     );
     if (orderError) {
       if (["22023", "P0001"].includes(orderError.code || "")) {
@@ -89,29 +93,58 @@ Deno.serve(async (request) => {
     }
     const order = Array.isArray(orderRows) ? orderRows[0] : null;
     if (typeof order?.order_id === "string") createdOrderId = order.order_id;
-    if (!order?.order_id || !Number.isSafeInteger(order.unit_amount_cents)) {
+    if (
+      !order?.order_id ||
+      !Number.isSafeInteger(Number(order.first_photo_cents)) ||
+      !Number.isSafeInteger(Number(order.extra_photo_cents)) ||
+      !Number.isSafeInteger(Number(order.subtotal_cents)) ||
+      !Number.isSafeInteger(Number(order.tip_cents)) ||
+      !Number.isSafeInteger(Number(order.total_cents))
+    ) {
       throw new Error("The secure order record could not be created.");
+    }
+    const pricing = buildCheckoutLineItems(
+      photoIds.length,
+      Number(order.first_photo_cents),
+      Number(order.extra_photo_cents),
+      Number(order.tip_cents),
+    );
+    if (
+      !pricing ||
+      pricing.subtotalCents !== Number(order.subtotal_cents) ||
+      pricing.totalCents !== Number(order.total_cents)
+    ) {
+      throw new Error("The order amount does not match the server pricing.");
     }
 
     const form = new URLSearchParams();
     form.set("mode", "payment");
     form.set("client_reference_id", order.order_id);
     form.set("metadata[order_id]", order.order_id);
-    form.set("customer_email", payload.email.trim());
+    form.set("metadata[tip_cents]", String(order.tip_cents));
     form.set("customer_creation", "always");
     form.set("expires_at", String(Math.floor(Date.now() / 1000) + 30 * 60));
     form.set("success_url", `${siteOrigin}/success?session_id={CHECKOUT_SESSION_ID}`);
     form.set("cancel_url", `${siteOrigin}/`);
-    form.set("line_items[0][quantity]", String(photoIds.length));
-    form.set("line_items[0][price_data][currency]", String(order.currency).toLowerCase());
     form.set(
-      "line_items[0][price_data][unit_amount]",
-      String(order.unit_amount_cents),
+      "custom_text[submit][message]",
+      `Photo information: ${siteOrigin}/info`,
     );
-    form.set(
-      "line_items[0][price_data][product_data][name]",
-      photoIds.length === 1 ? "Event photo" : `${photoIds.length} event photos`,
-    );
+
+    const addLineItem = (
+      index: number,
+      name: string,
+      quantity: number,
+      unitAmount: number,
+    ) => {
+      form.set(`line_items[${index}][quantity]`, String(quantity));
+      form.set(`line_items[${index}][price_data][currency]`, String(order.currency).toLowerCase());
+      form.set(`line_items[${index}][price_data][unit_amount]`, String(unitAmount));
+      form.set(`line_items[${index}][price_data][product_data][name]`, name);
+    };
+    pricing.lineItems.forEach((item, index) => {
+      addLineItem(index, item.name, item.quantity, item.unitAmountCents);
+    });
 
     const stripeResponse = await fetch("https://api.stripe.com/v1/checkout/sessions", {
       method: "POST",

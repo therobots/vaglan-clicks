@@ -1,5 +1,5 @@
 const storageKey = (token) => `vaglan-order:${token}`;
-const cartStorageKey = (eventId) => `vaglan-cart:${eventId}`;
+const cartStorageKey = (cartId) => `vaglan-cart:${cartId}`;
 
 /** @param {"localStorage" | "sessionStorage"} storageName */
 const browserStorage = (storageName) => {
@@ -11,31 +11,47 @@ const browserStorage = (storageName) => {
   }
 };
 
-export const readCartSelection = (eventId) => {
-  if (typeof eventId !== "string" || !eventId) return [];
+export const readCart = (cartId) => {
+  if (typeof cartId !== "string" || !cartId) return { photoIds: [], tipCents: 0 };
   const storage = browserStorage("localStorage");
-  if (!storage) return [];
+  if (!storage) return { photoIds: [], tipCents: 0 };
   try {
-    const saved = JSON.parse(storage.getItem(cartStorageKey(eventId)) || "[]");
+    const saved = JSON.parse(storage.getItem(cartStorageKey(cartId)) || "[]");
     const ids = Array.isArray(saved) ? saved : saved?.photoIds;
-    return Array.isArray(ids)
-      ? [...new Set(ids.filter((id) => typeof id === "string" && id))]
-      : [];
+    const tipCents = Number.isSafeInteger(saved?.tipCents) &&
+        [0, 100, 200, 300].includes(saved.tipCents)
+      ? saved.tipCents
+      : [0, 1, 2, 3].includes(saved?.tip)
+        ? saved.tip * 100
+        : 0;
+    return {
+      photoIds: Array.isArray(ids)
+        ? [...new Set(ids.filter((id) => typeof id === "string" && id))]
+        : [],
+      tipCents,
+    };
   } catch {
-    return [];
+    return { photoIds: [], tipCents: 0 };
   }
 };
 
-export const cacheCartSelection = (eventId, photoIds) => {
-  if (typeof eventId !== "string" || !eventId || !Array.isArray(photoIds)) return;
+export const readCartSelection = (cartId) => readCart(cartId).photoIds;
+export const readCartTip = (cartId) => readCart(cartId).tipCents;
+
+export const cacheCartSelection = (cartId, photoIds, tipCents = 0) => {
+  if (typeof cartId !== "string" || !cartId || !Array.isArray(photoIds)) return;
   const storage = browserStorage("localStorage");
   if (!storage) return;
   try {
     const ids = [...new Set(photoIds.filter((id) => typeof id === "string" && id))];
     if (ids.length) {
-      storage.setItem(cartStorageKey(eventId), JSON.stringify({ photoIds: ids }));
+      const safeTip = [0, 100, 200, 300].includes(tipCents) ? tipCents : 0;
+      storage.setItem(
+        cartStorageKey(cartId),
+        JSON.stringify({ photoIds: ids, tipCents: safeTip }),
+      );
     }
-    else storage.removeItem(cartStorageKey(eventId));
+    else storage.removeItem(cartStorageKey(cartId));
   } catch {
     // The current page cart remains usable when browser storage is unavailable.
   }
