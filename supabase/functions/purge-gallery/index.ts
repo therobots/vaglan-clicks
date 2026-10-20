@@ -1,7 +1,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 
-const previewBucket = "photos";
-const originalsBucket = "photo-originals";
+const previewBuckets = ["previews", "photos"] as const;
+const originalsBuckets = ["originals", "photo-originals"] as const;
 const corsHeaders = {
   "Access-Control-Allow-Headers": "content-type, x-purge-secret",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
@@ -11,7 +11,9 @@ const corsHeaders = {
 type PurgeCandidate = {
   photo_id: string;
   preview_url: string | null;
+  preview_bucket: string;
   original_path: string | null;
+  original_bucket: string | null;
   delete_original: boolean;
 };
 
@@ -30,18 +32,25 @@ const constantTimeEqual = (left: string, right: string) => {
   return difference === 0;
 };
 
-const getPreviewPath = (url: string, supabaseUrl: string) => {
+const getPreviewLocation = (url: string, supabaseUrl: string) => {
   const parsed = new URL(url);
   if (parsed.origin !== new URL(supabaseUrl).origin) {
     throw new Error("Preview is not stored in the configured Supabase project.");
   }
-  const prefixes = [
-    `/storage/v1/object/public/${previewBucket}/`,
-    `/storage/v1/object/sign/${previewBucket}/`,
-  ];
-  const prefix = prefixes.find((candidate) => parsed.pathname.startsWith(candidate));
-  if (!prefix) throw new Error("Could not identify the preview object path.");
-  return parsed.pathname.slice(prefix.length).split("/").map(decodeURIComponent).join("/");
+  for (const bucket of previewBuckets) {
+    const prefixes = [
+      `/storage/v1/object/public/${bucket}/`,
+      `/storage/v1/object/sign/${bucket}/`,
+    ];
+    const prefix = prefixes.find((candidate) => parsed.pathname.startsWith(candidate));
+    if (prefix) {
+      return {
+        bucket,
+        path: parsed.pathname.slice(prefix.length).split("/").map(decodeURIComponent).join("/"),
+      };
+    }
+  }
+  throw new Error("Could not identify the preview object path.");
 };
 
 Deno.serve(async (request) => {
@@ -104,14 +113,21 @@ Deno.serve(async (request) => {
     for (const candidate of rows) {
       try {
         if (candidate.preview_url) {
-          const previewPath = getPreviewPath(candidate.preview_url, supabaseUrl);
-          const { error } = await client.storage.from(previewBucket).remove([previewPath]);
+          if (!previewBuckets.includes(candidate.preview_bucket as typeof previewBuckets[number])) {
+            throw new Error("Gallery purge returned an invalid preview bucket.");
+          }
+          const preview = getPreviewLocation(candidate.preview_url, supabaseUrl);
+          const { error } = await client.storage.from(preview.bucket).remove([preview.path]);
           if (error) throw error;
           deletedPreviews += 1;
         }
         if (candidate.delete_original && candidate.original_path) {
+          const originalBucket = candidate.original_bucket || "photo-originals";
+          if (!originalsBuckets.includes(originalBucket as typeof originalsBuckets[number])) {
+            throw new Error("Gallery purge returned an invalid original bucket.");
+          }
           const { error } = await client.storage
-            .from(originalsBucket)
+            .from(originalBucket)
             .remove([candidate.original_path]);
           if (error) throw error;
           deletedOriginals += 1;

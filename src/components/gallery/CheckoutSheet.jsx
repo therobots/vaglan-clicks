@@ -116,7 +116,7 @@ export default function CheckoutSheet({
 
             <p className="mt-3 text-center text-[11px] leading-relaxed text-black/40">
               {checkoutEnabled
-                ? "Stripe will securely collect your email for the download receipt."
+                ? "Payment is securely processed by Viva Payments."
                 : "Secure checkout is not configured. No payment will be taken."}
             </p>
             <a href="/info" className="mt-3 block text-center text-xs font-semibold underline">

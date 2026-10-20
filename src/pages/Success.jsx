@@ -102,7 +102,7 @@ export default function Success({ orderToken = "" }) {
             Thank you for supporting @vaglan_clicks.
           </p>
           <p className="mt-2 text-xs text-neutral-500">
-            A backup download link is also emailed to the address provided at checkout.
+            Keep this private link to return to your downloads.
           </p>
           <a href="/info" className="mt-3 inline-block text-xs font-semibold underline">
             {text.successInfo}

@@ -41,13 +41,17 @@ import {
 } from '@/lib/galleryLanguage'
 
 const CART_ID = 'public-gallery'
-const PAGE_SIZE = 60
+const PAGE_SIZE = 20
 const NOTICE_KEY = 'vaglan-gallery-notice-dismissed'
+const normalizePhotoRow = (photo) => ({
+  ...photo,
+  is_free: Boolean(photo?.is_free ?? false),
+})
 const isMissingPricingColumns = (error) =>
   error?.code === '42703' ||
   error?.code === 'PGRST204' ||
-  (/(first_photo_cents|extra_photo_cents|tip_options_cents|currency)/i.test(String(error?.message || '')) &&
-    /column|schema cache/i.test(String(error?.message || '')))
+  /((first_photo_cents|extra_photo_cents|tip_options_cents|currency)|gallery_state)/i.test(String(error?.message || '')) &&
+  /column|table|schema cache|does not exist/i.test(String(error?.message || ''))
 /** @param {unknown} value @returns {value is { first_photo_cents: number, extra_photo_cents: number, tip_options_cents: number[], currency: string }} */
 const hasPricingSettings = (value) =>
   typeof value === 'object' &&
@@ -120,6 +124,8 @@ function GalleryApp() {
   const [removalNotice, setRemovalNotice] = useState('')
   const pageRequestId = useRef(0)
   const photosRef = useRef(photos)
+  const loadMoreSentinelRef = useRef(null)
+  const loadingMoreLockRef = useRef(false)
 
   useEffect(() => {
     photosRef.current = photos
@@ -169,7 +175,9 @@ function GalleryApp() {
         setLoadingMore(true)
         setLoadingMoreError('')
       } else {
+        loadingMoreLockRef.current = false
         setLoading(true)
+        setLoadingMore(false)
         setLoadingMoreError('')
         setHasMore(false)
         setNextCursor(null)
@@ -199,6 +207,30 @@ function GalleryApp() {
       const { data, error } = result
       if (requestId !== pageRequestId.current) return
       if (error) {
+        if (/column.*is_free|is_free.*does not exist/i.test(String(error.message || ''))) {
+          try {
+            const fallbackResult = await supabase
+              .from('photos')
+              .select('*')
+              .order('timestamp', { ascending: false })
+              .limit(PAGE_SIZE)
+            const fallbackRows = (fallbackResult.data || []).map(normalizePhotoRow)
+            setPhotos((current) => (append ? [...current, ...fallbackRows] : fallbackRows))
+            setLoadError('')
+            setConnectionStatus('connecting')
+            setLoading(false)
+            setLoadingMore(false)
+            setHasMore(fallbackRows.length === PAGE_SIZE)
+            setNextCursor(
+              fallbackRows.length > 0
+                ? { timestamp: fallbackRows[fallbackRows.length - 1].timestamp, id: fallbackRows[fallbackRows.length - 1].id }
+                : null,
+            )
+            return
+          } catch {
+            // Fall through to the standard error message below.
+          }
+        }
         const message = `Could not load photos: ${error.message || 'Unknown error'}`
         if (append) setLoadingMoreError(message)
         else setLoadError(message)
@@ -208,7 +240,7 @@ function GalleryApp() {
         return
       }
 
-      const rows = data || []
+      const rows = (data || []).map(normalizePhotoRow)
       setPhotos((current) => (append ? [...current, ...rows] : rows))
       if (!append) {
         setActivePhoto((current) =>
@@ -230,6 +262,36 @@ function GalleryApp() {
     [activeNight, activeSlot],
   )
 
+  const loadNextPhotoPage = useCallback(async () => {
+    if (loadingMoreLockRef.current || !hasMore || !nextCursor) return
+    loadingMoreLockRef.current = true
+    try {
+      await loadPhotoPage({
+        append: true,
+        beforeTimestamp: nextCursor.timestamp,
+        beforePhotoId: nextCursor.id,
+      })
+    } finally {
+      loadingMoreLockRef.current = false
+    }
+  }, [hasMore, loadPhotoPage, nextCursor])
+
+  useEffect(() => {
+    const sentinel = loadMoreSentinelRef.current
+    if (!sentinel || !hasMore || !activeNight || loadingMoreError) return undefined
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          void loadNextPhotoPage()
+        }
+      },
+      { rootMargin: '600px 0px' },
+    )
+    observer.observe(sentinel)
+    return () => observer.disconnect()
+  }, [activeNight, hasMore, loadMoreSentinelRef, loadingMoreError, loadNextPhotoPage])
+
   useEffect(() => {
     let active = true
     if (!isSupabaseConfigured || !supabase) {
@@ -247,7 +309,7 @@ function GalleryApp() {
         supabase.rpc('gallery_server_now'),
         supabase
           .from('gallery_state')
-          .select('first_photo_cents, extra_photo_cents, tip_options_cents, currency')
+          .select('*')
           .eq('id', 1)
           .maybeSingle(),
       ])
@@ -277,6 +339,7 @@ function GalleryApp() {
           setSchemaNotice(
             'Server-side photo pricing is not enabled yet. Apply the latest Supabase migration before checkout.',
           )
+          setPricingConfigured(false)
         } else {
           throw pricingResult.error
         }
@@ -602,15 +665,26 @@ function GalleryApp() {
     setCheckoutBusy(true)
     setCheckoutError('')
     try {
-      const { data, error } = await supabase.functions.invoke('create-checkout-session', {
+      const { data, error } = await supabase.functions.invoke('create-viva-order', {
         body: { photoIds: selectedIds, tipCents: safeTipCents },
       })
       if (error) throw error
       if (data?.error) throw new Error(data.error)
-      if (typeof data?.url !== 'string' || !data.url.startsWith('https://checkout.stripe.com/')) {
-        throw new Error('The secure Stripe checkout link was not returned.')
+      let checkoutUrl
+      try {
+        checkoutUrl = new URL(data?.url)
+      } catch {
+        throw new Error('The secure Viva checkout link was not returned.')
       }
-      window.location.assign(data.url)
+      if (
+        checkoutUrl.protocol !== 'https:' ||
+        !['www.vivapayments.com', 'demo.vivapayments.com'].includes(checkoutUrl.hostname) ||
+        checkoutUrl.pathname !== '/web/checkout' ||
+        !checkoutUrl.searchParams.has('ref')
+      ) {
+        throw new Error('The secure Viva checkout link was not returned.')
+      }
+      window.location.assign(checkoutUrl.toString())
     } catch (error) {
       setCheckoutError(
         await edgeFunctionErrorMessage(error, 'Could not open secure checkout. Please try again.'),
@@ -803,7 +877,7 @@ function GalleryApp() {
               </p>
             )}
             {hasMore && (
-              <div className="px-4 py-6 text-center">
+              <div ref={loadMoreSentinelRef} className="px-4 py-6 text-center">
                 {loadingMoreError && (
                   <p role="alert" className="mb-3 text-xs text-red-700">
                     {loadingMoreError}
@@ -812,13 +886,7 @@ function GalleryApp() {
                 <button
                   type="button"
                   disabled={loadingMore || !nextCursor}
-                  onClick={() =>
-                    loadPhotoPage({
-                      append: true,
-                      beforeTimestamp: nextCursor?.timestamp,
-                      beforePhotoId: nextCursor?.id,
-                    })
-                  }
+                  onClick={() => void loadNextPhotoPage()}
                   className="rounded-full border border-gray-300 px-4 py-2 text-xs font-bold disabled:opacity-50"
                 >
                   {loadingMore ? 'Loading…' : 'Load more photos'}

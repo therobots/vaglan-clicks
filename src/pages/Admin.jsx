@@ -212,7 +212,7 @@ export default function Admin() {
 
   const resetGallery = async () => {
     const confirmed = window.confirm(
-      'DANGER: This permanently deletes every photo record and every preview object in the "photos" bucket. High-resolution originals in "photo-originals" will be retained. Continue?',
+      'DANGER: This permanently deletes every photo record and every preview object in the "previews" and legacy "photos" buckets. High-resolution originals in "originals" and "photo-originals" will be retained. Continue?',
     )
     if (!confirmed) return
     if (window.prompt('Type RESET to permanently reset the gallery.') !== 'RESET') {

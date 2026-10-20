@@ -83,12 +83,17 @@ Deno.serve(async (request) => {
       filename: string;
       preview_url: string | null;
       original_path: string;
+      original_bucket?: string;
     }) => {
       const safeFilename = String(item.filename || "vaglan-clicks-photo")
         .replace(/[^\w.-]/g, "_")
         .slice(0, 160);
+      const originalBucket = item.original_bucket || "photo-originals";
+      if (!["originals", "photo-originals"].includes(originalBucket)) {
+        throw new Error("The order contains an invalid original storage bucket.");
+      }
       const { data, error } = await supabase.storage
-        .from("photo-originals")
+        .from(originalBucket)
         .createSignedUrl(item.original_path, 900, { download: safeFilename });
       if (error || !data?.signedUrl) {
         throw error || new Error("Could not create a secure photo download.");

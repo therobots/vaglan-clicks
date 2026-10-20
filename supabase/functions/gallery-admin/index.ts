@@ -5,8 +5,8 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, apikey, x-client-info, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
-const previewBucket = "photos";
-const originalsBucket = "photo-originals";
+const previewBuckets = ["previews", "photos"] as const;
+const originalsBuckets = ["originals", "photo-originals"] as const;
 const sessionDurationMs = 4 * 60 * 60 * 1000;
 const maxLoginFailures = 5;
 const loginWindowMs = 15 * 60 * 1000;
@@ -33,13 +33,20 @@ const getPreviewPath = (url: string, supabaseUrl: string) => {
   if (parsed.origin !== new URL(supabaseUrl).origin) {
     throw new Error("Photo preview is not stored in the configured Supabase project.");
   }
-  const prefixes = [
-    `/storage/v1/object/public/${previewBucket}/`,
-    `/storage/v1/object/sign/${previewBucket}/`,
-  ];
-  const prefix = prefixes.find((candidate) => parsed.pathname.startsWith(candidate));
-  if (!prefix) throw new Error("Could not identify the photo preview object in Storage.");
-  return parsed.pathname.slice(prefix.length).split("/").map(decodeURIComponent).join("/");
+  for (const bucket of previewBuckets) {
+    const prefixes = [
+      `/storage/v1/object/public/${bucket}/`,
+      `/storage/v1/object/sign/${bucket}/`,
+    ];
+    const prefix = prefixes.find((candidate) => parsed.pathname.startsWith(candidate));
+    if (prefix) {
+      return {
+        bucket,
+        path: parsed.pathname.slice(prefix.length).split("/").map(decodeURIComponent).join("/"),
+      };
+    }
+  }
+  throw new Error("Could not identify the photo preview object in Storage.");
 };
 
 const listAllObjects = async (storage: ReturnType<typeof createClient>["storage"], bucket: string) => {
@@ -93,18 +100,30 @@ const deletePhotoFiles = async (
   if (photoError) throw photoError;
   if (!photo) return false;
 
-  const previewPath = getPreviewPath(photo.preview_url, supabaseUrl);
-  const { data: originalPath, error: originalError } = await client.rpc(
-    "get_photo_original_path",
+  const preview = getPreviewPath(photo.preview_url, supabaseUrl);
+  const { data: original, error: originalError } = await client.rpc(
+    "get_photo_original_info",
     { photo_id_input: photo.id },
   );
   if (originalError) throw originalError;
-  if (originalPath) {
-    const { error } = await client.storage.from(originalsBucket).remove([originalPath]);
-    if (error) throw error;
+  if (
+    typeof original?.object_path !== "string" ||
+    !originalsBuckets.includes(original.storage_bucket)
+  ) {
+    throw new Error("Original photo storage metadata is unavailable.");
   }
-  const { error: previewError } = await client.storage.from(previewBucket).remove([previewPath]);
-  if (previewError) throw previewError;
+  const [originalRemoval, previewRemoval] = await Promise.all([
+    client.storage.from(original.storage_bucket).remove([original.object_path]),
+    client.storage.from(preview.bucket).remove([preview.path]),
+  ]);
+  if (originalRemoval.error || previewRemoval.error) {
+    throw new Error(
+      [
+        originalRemoval.error?.message && `Original: ${originalRemoval.error.message}`,
+        previewRemoval.error?.message && `Preview: ${previewRemoval.error.message}`,
+      ].filter(Boolean).join("; "),
+    );
+  }
   const { error: metadataError } = await client.rpc("delete_photo_original_path", {
     photo_id_input: photo.id,
   });
@@ -203,16 +222,21 @@ Deno.serve(async (request) => {
         return respond({ error: "This photo is no longer available for download." }, 410);
       }
 
-      const { data: originalPath, error: originalError } = await client.rpc(
-        "get_photo_original_path",
+      const { data: original, error: originalError } = await client.rpc(
+        "get_photo_original_info",
         { photo_id_input: photo.id },
       );
       if (originalError) throw originalError;
-      if (!originalPath) return respond({ error: "The original photo is unavailable." }, 404);
+      if (
+        typeof original?.object_path !== "string" ||
+        !originalsBuckets.includes(original.storage_bucket)
+      ) {
+        return respond({ error: "The original photo is unavailable." }, 404);
+      }
 
       const { data: signed, error: signError } = await client.storage
-        .from(originalsBucket)
-        .createSignedUrl(originalPath, 60, {
+        .from(original.storage_bucket)
+        .createSignedUrl(original.object_path, 60, {
           download: photo.filename || true,
         });
       if (signError) throw signError;
@@ -397,8 +421,10 @@ Deno.serve(async (request) => {
     }
 
     if (action === "reset-gallery") {
-      const objectPaths = await listAllObjects(client.storage, previewBucket);
-      await removeObjects(client.storage, previewBucket, objectPaths);
+      for (const bucket of previewBuckets) {
+        const objectPaths = await listAllObjects(client.storage, bucket);
+        await removeObjects(client.storage, bucket, objectPaths);
+      }
       const { data: deletedCount, error } = await client.rpc("reset_gallery_photos");
       if (error) throw error;
       return respond({ success: true, deletedCount });
