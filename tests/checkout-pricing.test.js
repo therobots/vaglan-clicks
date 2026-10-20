@@ -28,6 +28,8 @@ test("photo subtotal tiers are applied once per order", () => {
   for (const [count, expectedCents] of cases) {
     assert.equal(calculateSubtotalCents(count, 200, 50), expectedCents);
     assert.equal(selectionSubtotal(count, 2, 0.5), expectedCents / 100);
+    const checkout = buildCheckoutLineItems(count, 200, 50, 0);
+    assert.equal(checkout.totalCents, expectedCents);
   }
 });
 
@@ -69,4 +71,18 @@ test("a three-euro tip persists with selected photos across reloads", () => {
     photoIds: ["photo-1"],
     tipCents: 300,
   });
+});
+
+test("legacy euro-denominated cart tips are restored as cents", () => {
+  const entries = new Map([
+    ["vaglan-cart:public-gallery", JSON.stringify({ photoIds: ["photo-2"], tip: 3 })],
+  ]);
+  globalThis.window = {
+    localStorage: {
+      getItem: (key) => entries.get(key) ?? null,
+      setItem: (key, value) => entries.set(key, value),
+      removeItem: (key) => entries.delete(key),
+    },
+  };
+  assert.equal(readCart("public-gallery").tipCents, 300);
 });

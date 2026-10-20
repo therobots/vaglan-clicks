@@ -47,6 +47,14 @@ const isMissingPricingColumns = (error) =>
   error?.code === 'PGRST204' ||
   (/(first_photo_cents|extra_photo_cents|tip_options_cents|currency)/i.test(String(error?.message || '')) &&
     /column|schema cache/i.test(String(error?.message || '')))
+/** @param {unknown} value @returns {value is { first_photo_cents: number, extra_photo_cents: number, tip_options_cents: number[], currency: string }} */
+const hasPricingSettings = (value) =>
+  typeof value === 'object' &&
+  value !== null &&
+  'first_photo_cents' in value &&
+  'extra_photo_cents' in value &&
+  'tip_options_cents' in value &&
+  'currency' in value
 
 const photoTime = (value) => {
   if (typeof value === 'string' && /^\d+(?:\.\d+)?$/.test(value.trim())) {
@@ -209,9 +217,10 @@ function GalleryApp() {
       } else {
         setTimerAvailable(true)
         setTimerEndsAt(timerResult.data?.timer_ends_at || null)
-        const firstPrice = Number(timerResult.data?.first_photo_cents)
-        const extraPrice = Number(timerResult.data?.extra_photo_cents)
-        const configuredTips = timerResult.data?.tip_options_cents
+        const pricingData = hasPricingSettings(timerResult.data) ? timerResult.data : null
+        const firstPrice = Number(pricingData?.first_photo_cents)
+        const extraPrice = Number(pricingData?.extra_photo_cents)
+        const configuredTips = pricingData?.tip_options_cents
         const validTips =
           Array.isArray(configuredTips) &&
           configuredTips.length === TIP_OPTIONS_CENTS.length &&
@@ -222,7 +231,7 @@ function GalleryApp() {
           Number.isSafeInteger(extraPrice) &&
           extraPrice >= 0 &&
           validTips &&
-          timerResult.data?.currency === 'EUR'
+          pricingData?.currency === 'EUR'
         setPricingConfigured(Boolean(validPricing))
         if (validPricing) {
           setFirstPhotoCents(firstPrice)

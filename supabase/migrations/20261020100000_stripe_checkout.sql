@@ -16,7 +16,7 @@ begin
   ) then
     alter table public.gallery_state
       add constraint gallery_state_photo_prices_positive
-      check (first_photo_cents > 0 and extra_photo_cents >= 0);
+      check (first_photo_cents > 0 and extra_photo_cents > 0);
   end if;
   if not exists (
     select 1 from pg_constraint
@@ -52,7 +52,7 @@ create table if not exists private.orders (
   email text,
   subtotal_cents bigint not null check (subtotal_cents > 0),
   tip_cents integer not null default 0 check (tip_cents in (0, 100, 200, 300)),
-  total_cents bigint not null check (total_cents > 0),
+  total_cents bigint not null check (total_cents = subtotal_cents + tip_cents),
   currency text not null check (currency = 'EUR'),
   access_token_hash text unique,
   created_at timestamptz not null default now(),
@@ -118,7 +118,6 @@ security definer
 set search_path = pg_catalog, public, private
 as $$
 declare
-  photo_count integer;
   unique_photo_count integer;
   available_photo_count integer;
   original_count integer;

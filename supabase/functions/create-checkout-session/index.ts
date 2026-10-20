@@ -126,9 +126,13 @@ Deno.serve(async (request) => {
     form.set("expires_at", String(Math.floor(Date.now() / 1000) + 30 * 60));
     form.set("success_url", `${siteOrigin}/success?session_id={CHECKOUT_SESSION_ID}`);
     form.set("cancel_url", `${siteOrigin}/`);
+    const infoMessage = `Photo information: ${siteOrigin}/info`;
+    if (infoMessage.length > 120) {
+      throw new Error("SITE_URL is too long to include the required Stripe checkout information link.");
+    }
     form.set(
       "custom_text[submit][message]",
-      `Photo information: ${siteOrigin}/info`,
+      infoMessage,
     );
 
     const addLineItem = (

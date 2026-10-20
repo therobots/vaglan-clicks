@@ -1,3 +1,5 @@
+import { TIP_OPTIONS_CENTS } from "./pricing.js";
+
 const storageKey = (token) => `vaglan-order:${token}`;
 const cartStorageKey = (cartId) => `vaglan-cart:${cartId}`;
 
@@ -19,7 +21,7 @@ export const readCart = (cartId) => {
     const saved = JSON.parse(storage.getItem(cartStorageKey(cartId)) || "[]");
     const ids = Array.isArray(saved) ? saved : saved?.photoIds;
     const tipCents = Number.isSafeInteger(saved?.tipCents) &&
-        [0, 100, 200, 300].includes(saved.tipCents)
+        TIP_OPTIONS_CENTS.includes(saved.tipCents)
       ? saved.tipCents
       : [0, 1, 2, 3].includes(saved?.tip)
         ? saved.tip * 100
@@ -45,7 +47,7 @@ export const cacheCartSelection = (cartId, photoIds, tipCents = 0) => {
   try {
     const ids = [...new Set(photoIds.filter((id) => typeof id === "string" && id))];
     if (ids.length) {
-      const safeTip = [0, 100, 200, 300].includes(tipCents) ? tipCents : 0;
+      const safeTip = TIP_OPTIONS_CENTS.includes(tipCents) ? tipCents : 0;
       storage.setItem(
         cartStorageKey(cartId),
         JSON.stringify({ photoIds: ids, tipCents: safeTip }),
