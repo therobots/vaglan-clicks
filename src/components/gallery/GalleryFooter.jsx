@@ -4,10 +4,10 @@ export default function GalleryFooter() {
   return (
     <footer className="mt-8 flex flex-col items-center justify-center border-t border-gray-100 bg-white px-4 py-10">
       <h2 className="mb-1 text-center text-sm font-extrabold">
-        Want to see more shots &amp; event highlights?
+        Want to see more shots &amp; night highlights?
       </h2>
       <p className="mb-4 max-w-xs text-center text-xs text-gray-500">
-        Follow @vaglan_clicks on Instagram for full event drops &amp; updates.
+        Follow @vaglan_clicks on Instagram for full-night drops &amp; updates.
       </p>
       <a
         href="https://instagram.com/vaglan_clicks"

@@ -11,3 +11,6 @@ verify_jwt = true
 
 [functions.order-downloads]
 verify_jwt = true
+
+[functions.purge-gallery]
+verify_jwt = false

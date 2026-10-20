@@ -82,12 +82,41 @@ const test = async (
 const photosResult = await test('Read public preview columns', 'ALLOW', () =>
   supabase
     .from('photos')
-    .select('id,preview_url,filename,timestamp,is_free,created_at')
+    .select('id,preview_url,filename,timestamp,is_free,created_at,expires_at')
     .limit(1),
+  ({ data }) =>
+    (data || []).every((photo) => Date.parse(photo.expires_at) > Date.now()),
 )
-await test('Read public gallery timer', 'ALLOW', () =>
-  supabase.from('gallery_state').select('id,timer_ends_at').eq('id', 1).maybeSingle(),
+await test('Read public gallery pricing', 'ALLOW', () =>
+  supabase
+    .from('gallery_state')
+    .select('id,first_photo_cents,extra_photo_cents,tip_options_cents,currency')
+    .eq('id', 1)
+    .maybeSingle(),
 )
+const nightsResult = await test('Read public gallery nights', 'ALLOW', () =>
+  supabase.rpc('gallery_nights'),
+)
+await test('Read public gallery server clock', 'ALLOW', () =>
+  supabase.rpc('gallery_server_now'),
+)
+const currentNight = nightsResult?.data?.[0]?.night_key
+if (currentNight) {
+  const slotsResult = await test('Read public gallery time slots', 'ALLOW', () =>
+    supabase.rpc('gallery_slots', { night_key_input: currentNight }),
+  )
+  const firstSlot = slotsResult?.data?.[0]
+  await test('Read public paginated gallery photos', 'ALLOW', () =>
+    supabase.rpc('gallery_photos', {
+      night_key_input: currentNight,
+      slot_start_input: firstSlot?.slot_start || null,
+      slot_end_input: firstSlot?.slot_end || null,
+      before_timestamp_input: null,
+      before_photo_id_input: null,
+      limit_input: 10,
+    }),
+  )
+}
 
 const photo = photosResult?.data?.[0]
 const photoId = photo?.id || probeId
@@ -133,7 +162,6 @@ for (const [label, name, args] of [
 
 for (const [label, name] of [
   ['Call gallery reset as anon', 'reset_gallery_photos'],
-  ['Start timer as anon', 'start_gallery_timer'],
 ]) {
   if (process.env.AUDIT_ALLOW_MUTATING_RPCS === '1') {
     await test(label, 'DENY', () => supabase.rpc(name))

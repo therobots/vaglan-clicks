@@ -155,11 +155,14 @@ Deno.serve(async (request) => {
       }
       const { data: photo, error: photoError } = await client
         .from("photos")
-        .select("id, filename, is_free")
+        .select("id, filename, is_free, is_hidden, expires_at")
         .eq("id", payload.photoId)
         .maybeSingle();
       if (photoError) throw photoError;
       if (!photo?.is_free) return respond({ error: "This photo is not marked free." }, 403);
+      if (photo.is_hidden || !photo.expires_at || Date.parse(photo.expires_at) <= Date.now()) {
+        return respond({ error: "This photo is no longer available for download." }, 410);
+      }
 
       const { data: originalPath, error: originalError } = await client.rpc(
         "get_photo_original_path",
@@ -194,7 +197,7 @@ Deno.serve(async (request) => {
       while (true) {
         const { data, error } = await client
           .from("photos")
-          .select("id, preview_url, filename, timestamp, is_free")
+          .select("id, preview_url, filename, timestamp, is_free, is_hidden, expires_at")
           .order("timestamp", { ascending: false })
           .range(offset, offset + 999);
         if (error) throw error;
@@ -253,12 +256,6 @@ Deno.serve(async (request) => {
       const { data: deletedCount, error } = await client.rpc("reset_gallery_photos");
       if (error) throw error;
       return respond({ success: true, deletedCount });
-    }
-
-    if (action === "start-timer") {
-      const { data: timerEndsAt, error } = await client.rpc("start_gallery_timer");
-      if (error) throw error;
-      return respond({ timerEndsAt });
     }
 
     return respond({ error: "Unknown action." }, 400);

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { LogOut, LockKeyhole, Trash2 } from 'lucide-react'
 import { isSupabaseConfigured, supabase } from '@/supabaseClient'
+import { formatAthensDateTime, parseTimestamp } from '@/lib/timeBuckets'
 
 const SESSION_KEY = 'vaglan-gallery-admin-session'
 
@@ -45,19 +46,15 @@ const invokeAdmin = async (body) => {
   return data
 }
 
-const formatDate = (value) =>
-  value
-    ? new Intl.DateTimeFormat(undefined, {
-        dateStyle: 'medium',
-        timeStyle: 'short',
-      }).format(new Date(value))
-    : 'Unknown time'
+const formatDate = (value) => {
+  const timestamp = parseTimestamp(value)
+  return Number.isFinite(timestamp) ? formatAthensDateTime(timestamp) : 'Unknown time'
+}
 
 export default function Admin() {
   const [sessionToken, setSessionToken] = useState(readStoredSession)
   const [pin, setPin] = useState('')
   const [photos, setPhotos] = useState([])
-  const [timerEndsAt, setTimerEndsAt] = useState('')
   const [busyAction, setBusyAction] = useState('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -147,13 +144,6 @@ export default function Admin() {
     setNotice(`Gallery reset. ${result.deletedCount} photo records removed; originals retained.`)
   }
 
-  const startTimer = async () => {
-    const result = await runAdminAction('timer', 'start-timer')
-    if (!result) return
-    setTimerEndsAt(result.timerEndsAt)
-    setNotice(`48-hour timer started. It ends ${formatDate(result.timerEndsAt)}.`)
-  }
-
   const logout = () => {
     storeSession('')
     setSessionToken('')
@@ -235,23 +225,6 @@ export default function Admin() {
           </form>
         ) : (
           <>
-            <section className="mb-8 flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-gray-200 bg-white p-5">
-              <div>
-                <h2 className="font-bold">48-hour gallery timer</h2>
-                <p className="mt-1 text-sm text-gray-500">
-                  {timerEndsAt ? `Last started: ${formatDate(timerEndsAt)}` : 'Start or restart the public countdown.'}
-                </p>
-              </div>
-              <button
-                type="button"
-                disabled={Boolean(busyAction)}
-                onClick={startTimer}
-                className="rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50"
-              >
-                {busyAction === 'timer' ? 'Starting…' : 'Start 48h Timer'}
-              </button>
-            </section>
-
             <section className="mb-5 flex flex-wrap items-center justify-between gap-3">
               <h2 className="text-lg font-bold">Photos ({photos.length})</h2>
               <button

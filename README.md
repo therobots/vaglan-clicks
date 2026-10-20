@@ -1,6 +1,6 @@
 # Vaglan Clicks
 
-A live event-photo gallery built with React, Vite, and Supabase.
+A live photo gallery built with React, Vite, and Supabase.
 
 ## Local setup
 
@@ -16,18 +16,20 @@ A live event-photo gallery built with React, Vite, and Supabase.
 
    Use the project URL and **anon/public** key from the Supabase dashboard. Never put a service-role key in frontend configuration.
 
-4. Back up the existing Supabase database, then follow [`docs/SETUP.md`](./docs/SETUP.md) to review/apply active migrations in timestamp order. Do not apply the archived `20261019210000_gallery_security.sql`; it assumes a different `photos` schema. The active migrations preserve existing photo rows, harden public access, and add server-priced order/payment records.
+4. Back up the existing Supabase database, then follow [`docs/SETUP.md`](./docs/SETUP.md) to review/apply active migrations in timestamp order. Do not apply the archived `20261019210000_gallery_security.sql`; it assumes a different `photos` schema. The active migrations preserve existing photo rows, harden public access, add server-priced order/payment records, and add Athens-night navigation and per-night expiry.
 5. Run `npm run dev` and open the local URL printed by Vite.
 
 Without valid Supabase settings, the app displays a configuration message rather than making requests to placeholder credentials. Set `VITE_INSTAGRAM_HANDLE` to change the gallery footer profile; the default is `vaglan_clicks`. Run `npm run lint` and `npm run build` to check the frontend.
 
 ## Gallery and pricing
 
-The gallery displays watermarked, blurred previews in a three-column mobile grid. Visitors can filter by hour, select photos for €2.00 for the first photo and €0.50 for each additional photo in the checkout, optionally add a €0/€1/€2/€3 tip, and preview them in a full-screen lightbox.
+The gallery displays watermarked, blurred previews in a three-column mobile grid. Visitors can browse by Athens-local night and available capture-time slots, select photos for €2.00 for the first photo and €0.50 for each additional photo in the checkout, optionally add a €0/€1/€2/€3 tip, and preview them in a full-screen lightbox. Photos expire per night; the hourly purge remains in dry-run mode until an operator explicitly enables it as described in [`docs/SETUP.md`](./docs/SETUP.md).
+
+Camera ingestion must use corrected UTC capture timestamps and night-prefixed storage paths. See [`docs/INGEST.md`](./docs/INGEST.md); this repository does not currently include the camera-ingestion agent.
 
 ## Admin and free-photo setup
 
-1. Apply the active migrations described in [`docs/SETUP.md`](./docs/SETUP.md). The admin/timer migration adds `gallery_state`, `photos.is_free`, protected server-side admin sessions, and timer RPCs; the next migration restricts anon/authenticated writes and moves the PIN hash into the private schema. The previous `20261019210000_gallery_security.sql` is archived and must not be applied.
+1. Apply the active migrations described in [`docs/SETUP.md`](./docs/SETUP.md). The admin migration adds `gallery_state`, `photos.is_free`, protected server-side admin sessions, and legacy timer storage; the following migrations restrict anon/authenticated writes, move the PIN hash into the private schema, and add per-night expiry. The legacy timer is retained but no longer used. The previous `20261019210000_gallery_security.sql` is archived and must not be applied.
 2. Configure or rotate the private PIN hash in the Supabase SQL Editor. The entered PIN is checked only inside the Edge Function; the hash is never readable by public browser clients:
 
    ```sql
@@ -47,7 +49,7 @@ The gallery displays watermarked, blurred previews in a three-column mobile grid
    ```
 
    The project ref is the subdomain in the Supabase project URL (`https://YOUR_PROJECT_REF.supabase.co`). Supabase supplies `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` to deployed Edge Functions; do not add the service-role key to Vite environment variables. The `/admin` login cannot work until this function is deployed to the same project used by the frontend.
-5. Open `/admin` to manage photos and start the 48-hour timer. Reset requires confirmation plus typing `RESET`. It deletes all photo rows and empties the `photos` preview bucket; it deliberately retains original objects in `photo-originals`.
+5. Open `/admin` to manage photos. Reset requires confirmation plus typing `RESET`. It deletes all photo rows and empties the `photos` preview bucket; it deliberately retains original objects in `photo-originals`.
 
 Public free-photo downloads are issued as short-lived signed URLs only after the server verifies `photos.is_free`. Admin sessions expire after four hours and PIN attempts are rate-limited. Before deployment, follow the database backup, migration, and anon-access audit steps in [`docs/SETUP.md`](./docs/SETUP.md).
 

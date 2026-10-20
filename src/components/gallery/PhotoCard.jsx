@@ -8,7 +8,7 @@ export default function PhotoCard({ photo, selected, onToggle, onOpen }) {
     <div className="relative aspect-[3/4] overflow-hidden bg-neutral-100 select-none">
       <Image
         src={photo.preview_url}
-        alt={photo.filename || "Event photo preview"}
+        alt={photo.filename || "Photo preview"}
         loading="lazy"
         sizes="(max-width: 768px) 33vw, 220px"
         className="absolute inset-0 h-full w-full scale-[1.04] blur-[2px]"

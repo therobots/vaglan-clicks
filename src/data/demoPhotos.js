@@ -1,4 +1,4 @@
-// Sample gallery shown for the demo event so the app has content on first load.
+// Sample gallery images for local interface previews.
 export const demoPhotoUrls = [
   "https://media.db.com/images/public/6ad613159c1bada39780ddfc/a770d9198_generated_3f694b49.png",
   "https://media.db.com/images/public/6ad613159c1bada39780ddfc/4f873fbd6_generated_3a7e22be.png",
@@ -10,5 +10,3 @@ export const demoPhotoUrls = [
   "https://media.db.com/images/public/6ad613159c1bada39780ddfc/71da484ae_generated_928221ac.png",
   "https://media.db.com/images/public/6ad613159c1bada39780ddfc/b59924292_generated_dcf00f46.png",
 ];
-
-export const DEMO_EVENT_SLUG = "street-session-07";

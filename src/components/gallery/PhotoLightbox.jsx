@@ -6,6 +6,7 @@ import { formatMoney } from "@/lib/money";
 
 export default function PhotoLightbox({
   photo,
+  capturedAt = "",
   selected,
   isFree = false,
   isDownloading = false,
@@ -152,9 +153,16 @@ export default function PhotoLightbox({
       className="fixed inset-0 z-50 flex flex-col bg-white"
     >
       <div className="flex items-center justify-between px-4 pb-3 pt-[calc(env(safe-area-inset-top)+0.75rem)]">
-        <span className="truncate pr-3 text-[11px] font-bold uppercase tracking-[0.1em] text-black/35">
-          {photo.filename || "Preview"}
-        </span>
+        <div className="min-w-0 pr-3">
+          <span className="block truncate text-[11px] font-bold uppercase tracking-[0.1em] text-black/35">
+            {photo.filename || "Preview"}
+          </span>
+          {capturedAt && (
+            <span className="mt-0.5 block text-[10px] font-medium text-neutral-500">
+              Taken {capturedAt} Athens time
+            </span>
+          )}
+        </div>
         <button
           type="button"
           onClick={onClose}
@@ -190,7 +198,7 @@ export default function PhotoLightbox({
             >
               <img
                 src={photo.preview_url}
-                alt={photo.filename || "Event photo preview"}
+                alt={photo.filename || "Photo preview"}
                 loading="lazy"
                 draggable={false}
                 className="max-h-full max-w-full object-contain"

@@ -21,14 +21,15 @@ export default function TimeFilterBar({ slots = [], activeSlot, onSelect }) {
   return (
     <div
       aria-label="Filter photos by time"
+      role="group"
       className="flex gap-1.5 overflow-x-auto px-4 pb-1 pt-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
     >
       <Pill active={activeSlot === null} onClick={() => onSelect(null)}>
-        🔥 All Shots
+        All photos
       </Pill>
       {slots.map((slot) => (
         <Pill key={slot.slot} active={activeSlot === slot.slot} onClick={() => onSelect(slot.slot)}>
-          {slot.label}
+          {slot.label} ({slot.photo_count})
         </Pill>
       ))}
     </div>

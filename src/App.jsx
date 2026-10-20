@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence } from 'framer-motion'
 import { Check } from 'lucide-react'
 import GalleryFooter from '@/components/gallery/GalleryFooter'
@@ -7,6 +7,8 @@ import LiveStatusPill from '@/components/gallery/LiveStatusPill'
 import PhotoLightbox from '@/components/gallery/PhotoLightbox'
 import CartBar from '@/components/gallery/CartBar'
 import CheckoutSheet from '@/components/gallery/CheckoutSheet'
+import ExpiryBanner from '@/components/gallery/ExpiryBanner'
+import TimeFilterBar from '@/components/gallery/TimeFilterBar'
 import Watermark from '@/components/gallery/Watermark'
 import Admin from '@/pages/Admin'
 import Success from '@/pages/Success'
@@ -21,27 +23,17 @@ import {
   nextPhotoPrice,
   selectionSubtotal,
 } from '@/lib/pricing'
-import { parseTimestamp } from '@/lib/timeBuckets'
+import {
+  athensHourKey,
+  formatAthensDateTime,
+  formatAthensHour,
+  formatNightLabel,
+  mapGallerySlots,
+  parseTimestamp,
+} from '@/lib/timeBuckets'
 
 const CART_ID = 'public-gallery'
-const PHOTO_FIELDS = 'id, preview_url, filename, timestamp, is_free'
-const LEGACY_PHOTO_FIELDS = 'id, preview_url, filename, timestamp'
-const FILTERS = [
-  { id: 'ALL', label: 'All' },
-  { id: '23-00', label: '23:00–00:00' },
-  { id: '00-01', label: '00:00–01:00' },
-  { id: '01-02', label: '01:00–02:00' },
-  { id: '02-03', label: '02:00–03:00' },
-]
-const isMissingFreePhotoColumn = (error) =>
-  error?.code === '42703' ||
-  (String(error?.message || '').includes('is_free') &&
-    /column|schema cache/i.test(String(error?.message || '')))
-const isMissingGalleryStateTable = (error) =>
-  error?.code === '42P01' ||
-  error?.code === 'PGRST205' ||
-  (String(error?.message || '').includes('gallery_state') &&
-    /table|schema cache|could not find/i.test(String(error?.message || '')))
+const PAGE_SIZE = 60
 const isMissingPricingColumns = (error) =>
   error?.code === '42703' ||
   error?.code === 'PGRST204' ||
@@ -56,61 +48,55 @@ const hasPricingSettings = (value) =>
   'tip_options_cents' in value &&
   'currency' in value
 
-const photoTime = (value) => {
-  if (typeof value === 'string' && /^\d+(?:\.\d+)?$/.test(value.trim())) {
-    const numericValue = Number(value)
-    return new Date(numericValue < 1e12 ? numericValue * 1000 : numericValue)
+const groupPhotosByTime = (items) => {
+  const groups = new Map()
+  for (const photo of items) {
+    const key = athensHourKey(photo.timestamp)
+    if (!key) continue
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key,
+        label: `${formatAthensHour(photo.timestamp)}:00`,
+        photos: [],
+      })
+    }
+    groups.get(key).photos.push(photo)
   }
-  if (typeof value === 'number') {
-    return new Date(value < 1e12 ? value * 1000 : value)
-  }
-  const milliseconds = parseTimestamp(value)
-  return Number.isFinite(milliseconds) ? new Date(milliseconds) : null
+  return [...groups.values()].sort(
+    (left, right) =>
+      parseTimestamp(right.photos[0]?.timestamp) - parseTimestamp(left.photos[0]?.timestamp),
+  )
 }
-
-const photoFilter = (photo) => {
-  const date = photoTime(photo.timestamp)
-  if (!date || Number.isNaN(date.getTime())) return null
-  const hour = date.getHours()
-  if (hour === 23) return '23-00'
-  if (hour === 0) return '00-01'
-  if (hour === 1) return '01-02'
-  if (hour === 2) return '02-03'
-  return null
-}
-
-const sortPhotos = (items) =>
-  [...items].sort((left, right) => {
-    const leftTime = photoTime(left.timestamp)?.getTime() ?? Number.NEGATIVE_INFINITY
-    const rightTime = photoTime(right.timestamp)?.getTime() ?? Number.NEGATIVE_INFINITY
-    const difference = rightTime - leftTime
-    return Number.isNaN(difference) ? 0 : difference
-  })
 
 function GalleryApp() {
   const [photos, setPhotos] = useState([])
+  const [nights, setNights] = useState([])
+  const [activeNight, setActiveNight] = useState('')
+  const [slots, setSlots] = useState([])
+  const [activeSlot, setActiveSlot] = useState(null)
+  const [nextCursor, setNextCursor] = useState(null)
+  const [hasMore, setHasMore] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [selectedIds, setSelectedIds] = useState(() => readCartSelection(CART_ID))
   const [tipCents, setTipCents] = useState(() => readCartTip(CART_ID))
-  const [activeFilter, setActiveFilter] = useState('ALL')
   const [activePhoto, setActivePhoto] = useState(null)
-  const [timerEndsAt, setTimerEndsAt] = useState(null)
   const [firstPhotoCents, setFirstPhotoCents] = useState(DEFAULT_FIRST_PRICE * 100)
   const [extraPhotoCents, setExtraPhotoCents] = useState(EXTRA_PHOTO_PRICE * 100)
   const [tipOptionsCents, setTipOptionsCents] = useState(TIP_OPTIONS_CENTS)
   const [currency, setCurrency] = useState('EUR')
   const [pricingConfigured, setPricingConfigured] = useState(false)
-  const [timerAvailable, setTimerAvailable] = useState(true)
   const [schemaNotice, setSchemaNotice] = useState('')
-  const [now, setNow] = useState(Date.now())
-  const [timerError, setTimerError] = useState('')
+  const [serverOffsetMs, setServerOffsetMs] = useState(0)
   const [downloadingPhotoId, setDownloadingPhotoId] = useState(null)
   const [downloadError, setDownloadError] = useState('')
   const [loading, setLoading] = useState(true)
+  const [loadingMoreError, setLoadingMoreError] = useState('')
   const [loadError, setLoadError] = useState('')
   const [connectionStatus, setConnectionStatus] = useState('connecting')
   const [checkoutOpen, setCheckoutOpen] = useState(false)
   const [checkoutBusy, setCheckoutBusy] = useState(false)
   const [checkoutError, setCheckoutError] = useState('')
+  const pageRequestId = useRef(0)
 
   useEffect(() => {
     cacheCartSelection(CART_ID, selectedIds, tipCents)
@@ -130,94 +116,141 @@ function GalleryApp() {
     }
   }, [activePhoto])
 
-  useEffect(() => {
-    let active = true
-    let channel
-
-    const loadPhotos = async () => {
-      if (!isSupabaseConfigured || !supabase) {
-        setLoadError(
-          'Gallery is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to connect Supabase.',
-        )
-        setConnectionStatus('offline')
+  const loadPhotoPage = useCallback(
+    async ({
+      append = false,
+      beforeTimestamp = null,
+      beforePhotoId = null,
+      night = activeNight,
+      slot = activeSlot,
+    } = {}) => {
+      const requestId = ++pageRequestId.current
+      if (!supabase || !night) {
+        setPhotos([])
+        setHasMore(false)
+        setNextCursor(null)
         setLoading(false)
+        setLoadingMore(false)
         return
       }
 
-      const photoRequest = async () => {
-        const currentSchemaResult = await supabase
-          .from('photos')
-          .select(PHOTO_FIELDS)
-          .order('timestamp', { ascending: false })
-          .limit(500)
-        if (!currentSchemaResult.error || !isMissingFreePhotoColumn(currentSchemaResult.error)) {
-          return currentSchemaResult
-        }
-
-        setSchemaNotice(
-          'Free-photo features are not enabled yet. Apply the latest Supabase migration to enable them.',
-        )
-        const legacySchemaResult = await supabase
-          .from('photos')
-          .select(LEGACY_PHOTO_FIELDS)
-          .order('timestamp', { ascending: false })
-          .limit(500)
-        return legacySchemaResult.data
-          ? {
-              ...legacySchemaResult,
-              data: legacySchemaResult.data.map((photo) => ({ ...photo, is_free: false })),
-            }
-          : legacySchemaResult
+      if (append) {
+        setLoadingMore(true)
+        setLoadingMoreError('')
+      } else {
+        setLoading(true)
+        setLoadingMoreError('')
+        setHasMore(false)
+        setNextCursor(null)
+        setPhotos([])
+        setLoadError('')
+      }
+      let result
+      try {
+        result = await supabase.rpc('gallery_photos', {
+          night_key_input: night,
+          slot_start_input: slot?.slot_start || null,
+          slot_end_input: slot?.slot_end || null,
+          before_timestamp_input: beforeTimestamp,
+          before_photo_id_input: beforePhotoId,
+          limit_input: PAGE_SIZE,
+        })
+      } catch (error) {
+        if (requestId !== pageRequestId.current) return
+        const message = `Could not load photos: ${error.message || 'Unknown error'}`
+        if (append) setLoadingMoreError(message)
+        else setLoadError(message)
+        setConnectionStatus('offline')
+        setLoading(false)
+        setLoadingMore(false)
+        return
+      }
+      const { data, error } = result
+      if (requestId !== pageRequestId.current) return
+      if (error) {
+        const message = `Could not load photos: ${error.message || 'Unknown error'}`
+        if (append) setLoadingMoreError(message)
+        else setLoadError(message)
+        setConnectionStatus('offline')
+        setLoading(false)
+        setLoadingMore(false)
+        return
       }
 
-      const timerRequest = async () => {
-        const currentResult = await supabase
-          .from('gallery_state')
-          .select('timer_ends_at, first_photo_cents, extra_photo_cents, tip_options_cents, currency')
-          .eq('id', 1)
-          .maybeSingle()
-        if (!currentResult.error || !isMissingPricingColumns(currentResult.error)) {
-          return currentResult
-        }
-        setSchemaNotice(
-          'Server-side photo pricing is not enabled yet. Apply the latest Supabase migration before checkout.',
+      const rows = data || []
+      setPhotos((current) => (append ? [...current, ...rows] : rows))
+      if (!append) {
+        setActivePhoto((current) =>
+          current && !rows.some((photo) => photo.id === current.id) ? null : current,
         )
-        return supabase
-          .from('gallery_state')
-          .select('timer_ends_at')
-          .eq('id', 1)
-          .maybeSingle()
       }
-
-      const [photoResult, timerResult] = await Promise.all([
-        photoRequest(),
-        timerRequest(),
-      ])
-
-      if (!active) return
-      if (photoResult.error) throw photoResult.error
-      const loadedPhotos = sortPhotos(photoResult.data || [])
-      setPhotos(loadedPhotos)
-      setSelectedIds((current) =>
-        current.filter((selectedId) =>
-          loadedPhotos.some((photo) => photo.id === selectedId && !photo.is_free),
-        ),
+      const lastPhoto = rows[rows.length - 1]
+      setNextCursor((current) =>
+        lastPhoto ? { timestamp: lastPhoto.timestamp, id: lastPhoto.id } : append ? current : null,
       )
-      if (timerResult.error) {
-        if (isMissingGalleryStateTable(timerResult.error)) {
-          setTimerAvailable(false)
-          setTimerEndsAt(null)
+      setHasMore(rows.length === PAGE_SIZE)
+      setSelectedIds((current) =>
+        current.filter((id) => !rows.some((photo) => photo.id === id && photo.is_free)),
+      )
+      setLoadError('')
+      setLoading(false)
+      setLoadingMore(false)
+    },
+    [activeNight, activeSlot],
+  )
+
+  useEffect(() => {
+    let active = true
+    if (!isSupabaseConfigured || !supabase) {
+      setLoadError(
+        'Gallery is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to connect Supabase.',
+      )
+      setConnectionStatus('offline')
+      setLoading(false)
+      return undefined
+    }
+
+    const loadGallery = async () => {
+      const [nightsResult, clockResult, pricingResult] = await Promise.all([
+        supabase.rpc('gallery_nights'),
+        supabase.rpc('gallery_server_now'),
+        supabase
+          .from('gallery_state')
+          .select('first_photo_cents, extra_photo_cents, tip_options_cents, currency')
+          .eq('id', 1)
+          .maybeSingle(),
+      ])
+      if (!active) return
+      if (nightsResult.error) {
+        throw new Error(
+          `Could not load gallery nights: ${nightsResult.error.message}. Apply the latest gallery migration.`,
+        )
+      }
+      if (clockResult.error) {
+        throw new Error(
+          `Could not read the gallery server clock: ${clockResult.error.message}. Apply the latest gallery migration.`,
+        )
+      }
+      const loadedNights = nightsResult.data || []
+      setNights(loadedNights)
+      setActiveNight((current) =>
+        loadedNights.some((night) => night.night_key === current)
+          ? current
+          : loadedNights[0]?.night_key || '',
+      )
+      const serverNow = parseTimestamp(clockResult.data)
+      if (Number.isFinite(serverNow)) setServerOffsetMs(serverNow - Date.now())
+
+      if (pricingResult.error) {
+        if (isMissingPricingColumns(pricingResult.error)) {
           setSchemaNotice(
-            'Admin timer and free-photo features are not enabled yet. Apply the latest Supabase migration to enable them.',
+            'Server-side photo pricing is not enabled yet. Apply the latest Supabase migration before checkout.',
           )
-          setTimerError('')
         } else {
-          setTimerError(`Could not load gallery timer: ${timerResult.error.message}`)
+          throw pricingResult.error
         }
       } else {
-        setTimerAvailable(true)
-        setTimerEndsAt(timerResult.data?.timer_ends_at || null)
-        const pricingData = hasPricingSettings(timerResult.data) ? timerResult.data : null
+        const pricingData = hasPricingSettings(pricingResult.data) ? pricingResult.data : null
         const firstPrice = Number(pricingData?.first_photo_cents)
         const extraPrice = Number(pricingData?.extra_photo_cents)
         const configuredTips = pricingData?.tip_options_cents
@@ -240,116 +273,172 @@ function GalleryApp() {
           setCurrency('EUR')
           setTipCents((current) => (isAllowedTip(current, configuredTips) ? current : 0))
         }
-        setTimerError('')
       }
+      setConnectionStatus('connecting')
       setLoadError('')
-      setLoading(false)
-
-      channel = supabase
-        .channel('public-photos-feed')
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: 'photos' },
-          (payload) => {
-            if (!active) return
-            if (payload.eventType === 'DELETE') {
-              setPhotos((current) => current.filter((photo) => photo.id !== payload.old?.id))
-              setSelectedIds((current) => current.filter((id) => id !== payload.old?.id))
-              setActivePhoto((current) => (current?.id === payload.old?.id ? null : current))
-              return
-            }
-            const photo = payload.new
-            if (!photo?.id || !photo?.preview_url) return
-            setActivePhoto((current) => (current?.id === photo.id ? photo : current))
-            setPhotos((current) => {
-              const withoutDuplicate = current.filter((item) => item.id !== photo.id)
-              return sortPhotos([...withoutDuplicate, photo])
-            })
-            if (photo.is_free) {
-              setSelectedIds((current) => current.filter((id) => id !== photo.id))
-            }
-          },
-        )
-        .subscribe((status) => {
-          if (!active) return
-          setConnectionStatus(status === 'SUBSCRIBED' ? 'live' : 'offline')
-        })
     }
 
-    loadPhotos().catch((error) => {
+    loadGallery().catch((error) => {
       if (!active) return
-      setLoadError(`Could not load photos: ${error.message || 'Unknown error'}`)
+      setLoadError(`Could not load gallery: ${error.message || 'Unknown error'}`)
       setConnectionStatus('offline')
       setLoading(false)
     })
-
     return () => {
       active = false
-      if (channel && supabase) supabase.removeChannel(channel)
     }
   }, [])
 
   useEffect(() => {
-    if (!supabase || !timerAvailable) return undefined
+    if (!supabase) return undefined
     let active = true
-    const refreshTimer = async () => {
-      const { data, error } = await supabase
-        .from('gallery_state')
-        .select('timer_ends_at')
-        .eq('id', 1)
-        .maybeSingle()
+    const refreshNightAvailability = async () => {
+      const [nightsResult, clockResult] = await Promise.all([
+        supabase.rpc('gallery_nights'),
+        supabase.rpc('gallery_server_now'),
+      ])
       if (!active) return
-      if (error) {
-        if (isMissingGalleryStateTable(error)) {
-          setTimerAvailable(false)
-          setTimerEndsAt(null)
-          setTimerError('')
-          setSchemaNotice(
-            'Admin timer and free-photo features are not enabled yet. Apply the latest Supabase migration to enable them.',
-          )
-          return
-        }
-        setTimerError(`Could not load gallery timer: ${error.message}`)
+      if (nightsResult.error) {
+        setLoadError(`Could not refresh gallery nights: ${nightsResult.error.message}`)
         return
       }
-      setTimerEndsAt(data?.timer_ends_at || null)
-      setTimerError('')
+      const refreshedNights = nightsResult.data || []
+      setNights(refreshedNights)
+      if (!refreshedNights.some((night) => night.night_key === activeNight)) {
+        setActiveSlot(null)
+        setActivePhoto(null)
+      }
+      setActiveNight((current) =>
+        refreshedNights.some((night) => night.night_key === current)
+          ? current
+          : refreshedNights[0]?.night_key || '',
+      )
+      if (clockResult.error) {
+        setLoadError(`Could not refresh gallery server time: ${clockResult.error.message}`)
+        return
+      }
+      const serverNow = parseTimestamp(clockResult.data)
+      if (Number.isFinite(serverNow)) setServerOffsetMs(serverNow - Date.now())
     }
     const interval = window.setInterval(() => {
-      refreshTimer().catch((error) => {
-        if (active) setTimerError(`Could not refresh gallery timer: ${error.message}`)
+      refreshNightAvailability().catch((error) => {
+        if (active) setLoadError(`Could not refresh gallery nights: ${error.message}`)
       })
-    }, 15000)
+    }, 60000)
     return () => {
       active = false
       window.clearInterval(interval)
     }
-  }, [timerAvailable])
+  }, [activeNight])
 
   useEffect(() => {
-    if (!timerEndsAt) return undefined
-    setNow(Date.now())
-    const target = parseTimestamp(timerEndsAt)
-    if (!Number.isFinite(target) || target <= Date.now()) return undefined
-    const timer = window.setInterval(() => {
-      const currentTime = Date.now()
-      setNow(currentTime)
-      if (currentTime >= target) window.clearInterval(timer)
-    }, 1000)
-    return () => window.clearInterval(timer)
-  }, [timerEndsAt])
+    if (!activeNight || !supabase) {
+      setSlots([])
+      return undefined
+    }
+    let active = true
+    const loadSlots = async () => {
+      try {
+        const { data, error } = await supabase.rpc('gallery_slots', {
+          night_key_input: activeNight,
+        })
+        if (!active) return
+        if (error) {
+          setLoadError(`Could not load time slots: ${error.message}`)
+          return
+        }
+        setSlots(mapGallerySlots(data || []))
+      } catch (error) {
+        if (active) setLoadError(`Could not load time slots: ${error.message}`)
+      }
+    }
+    loadSlots()
+    return () => {
+      active = false
+    }
+  }, [activeNight])
 
-  const visiblePhotos = useMemo(
-    () =>
-      activeFilter === 'ALL'
-        ? photos
-        : photos.filter((photo) => photoFilter(photo) === activeFilter),
-    [activeFilter, photos],
-  )
+  useEffect(() => {
+    loadPhotoPage()
+  }, [loadPhotoPage])
+
+  useEffect(() => {
+    if (!supabase) return undefined
+    let active = true
+    const channel = supabase
+      .channel('public-photos-feed')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'photos' },
+        async (payload) => {
+          if (!active) return
+          try {
+            if (payload.eventType === 'DELETE' && payload.old?.id) {
+              setSelectedIds((current) => current.filter((id) => id !== payload.old.id))
+              setActivePhoto((current) => (current?.id === payload.old.id ? null : current))
+            }
+            const [nightsResult, clockResult] = await Promise.all([
+              supabase.rpc('gallery_nights'),
+              supabase.rpc('gallery_server_now'),
+            ])
+            if (!active) return
+            if (nightsResult.error) {
+              setLoadError(`Could not refresh gallery nights: ${nightsResult.error.message}`)
+              return
+            }
+            const refreshedNights = nightsResult.data || []
+            setNights(refreshedNights)
+            if (!refreshedNights.some((night) => night.night_key === activeNight)) {
+              setActiveSlot(null)
+              setActivePhoto(null)
+              setActiveNight(refreshedNights[0]?.night_key || '')
+            } else {
+              const { data: updatedSlots, error: slotsError } = await supabase.rpc(
+                'gallery_slots',
+                { night_key_input: activeNight },
+              )
+              if (slotsError) {
+                setLoadError(`Could not refresh time slots: ${slotsError.message}`)
+                return
+              }
+              const mappedSlots = mapGallerySlots(updatedSlots || [])
+              setSlots(mappedSlots)
+              const slotStillAvailable =
+                !activeSlot ||
+                mappedSlots.some(
+                  (slot) =>
+                    slot.slot_start === activeSlot.slot_start &&
+                    slot.slot_end === activeSlot.slot_end,
+                )
+              if (!slotStillAvailable) {
+                setActiveSlot(null)
+              } else {
+                await loadPhotoPage({ append: false, slot: activeSlot })
+              }
+            }
+            if (clockResult.error) {
+              setLoadError(`Could not refresh gallery server time: ${clockResult.error.message}`)
+              return
+            }
+            const serverNow = parseTimestamp(clockResult.data)
+            if (Number.isFinite(serverNow)) setServerOffsetMs(serverNow - Date.now())
+          } catch (error) {
+            if (active) setLoadError(`Could not refresh the live gallery: ${error.message}`)
+          }
+        },
+      )
+      .subscribe((status) => {
+        if (active) setConnectionStatus(status === 'SUBSCRIBED' ? 'live' : 'offline')
+      })
+    return () => {
+      active = false
+      supabase.removeChannel(channel)
+    }
+  }, [activeNight, loadPhotoPage])
+
+  const photoGroups = useMemo(() => groupPhotosByTime(photos), [photos])
   const selectedCount = selectedIds.length
-  const activePhotoIndex = activePhoto
-    ? visiblePhotos.findIndex((photo) => photo.id === activePhoto.id)
-    : -1
+  const activePhotoIndex = activePhoto ? photos.findIndex((photo) => photo.id === activePhoto.id) : -1
   const firstPhotoPrice = firstPhotoCents / 100
   const extraPhotoPrice = extraPhotoCents / 100
   const subtotal = selectionSubtotal(selectedCount, firstPhotoPrice, extraPhotoPrice)
@@ -359,17 +448,7 @@ function GalleryApp() {
     style: 'currency',
     currency,
   }).format(total)
-  const remainingSeconds = timerEndsAt
-    ? Math.max(0, Math.floor((parseTimestamp(timerEndsAt) - now) / 1000))
-    : 0
-  const timerIsActive = Number.isFinite(remainingSeconds) && remainingSeconds > 0
-  const countdown = [
-    Math.floor(remainingSeconds / 3600),
-    Math.floor((remainingSeconds % 3600) / 60),
-    remainingSeconds % 60,
-  ]
-    .map((value) => String(value).padStart(2, '0'))
-    .join(':')
+  const activeNightData = nights.find((night) => night.night_key === activeNight)
 
   const toggleSelected = (photoId) => {
     setSelectedIds((current) =>
@@ -430,50 +509,89 @@ function GalleryApp() {
 
   return (
     <div className="min-h-screen bg-white pb-24 font-sans text-neutral-900">
-      <GalleryHeader photoCount={loading ? undefined : photos.length}>
+      <GalleryHeader photoCount={activeNightData?.photo_count}>
         <LiveStatusPill state={connectionStatus === 'live' ? 'live' : 'offline'} />
       </GalleryHeader>
 
       <main className="mx-auto max-w-3xl pt-16">
-        {timerIsActive && (
-          <div
-            role="timer"
-            aria-label={`Gallery closes in ${countdown}`}
-            className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-center text-xs font-semibold text-amber-900"
-          >
-            Gallery closes in <span className="font-mono tabular-nums">{countdown}</span>
-          </div>
-        )}
-        {timerError && (
-          <p role="status" className="px-4 py-2 text-center text-xs text-amber-800">
-            {timerError}
-          </p>
-        )}
+        <ExpiryBanner
+          expiresAt={activeNightData?.expires_at}
+          serverOffsetMs={serverOffsetMs}
+        />
         {schemaNotice && (
           <p role="status" className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-center text-xs text-amber-900">
             {schemaNotice}
           </p>
         )}
-        <nav
-          aria-label="Filter photos by hour"
-          className="flex gap-2 overflow-x-auto border-b border-gray-100 px-3 py-3"
-        >
-          {FILTERS.map((filter) => (
-            <button
-              key={filter.id}
-              type="button"
-              aria-pressed={activeFilter === filter.id}
-              onClick={() => setActiveFilter(filter.id)}
-              className={`whitespace-nowrap rounded-full border px-3 py-1.5 text-xs transition-colors ${
-                activeFilter === filter.id
-                  ? 'border-neutral-900 bg-neutral-100 font-bold text-neutral-900'
-                  : 'border-gray-200 bg-white text-neutral-600'
-              }`}
-            >
-              {filter.label}
-            </button>
-          ))}
-        </nav>
+        {nights.length > 1 && (
+          <nav
+            aria-label="Choose gallery night"
+            className="flex gap-2 overflow-x-auto border-b border-gray-100 px-3 py-3"
+          >
+            {nights.map((night) => (
+              <button
+                key={night.night_key}
+                type="button"
+                aria-pressed={activeNight === night.night_key}
+                onClick={() => {
+                  setActivePhoto(null)
+                  setActiveSlot(null)
+                  setActiveNight(night.night_key)
+                }}
+                className={`whitespace-nowrap rounded-full border px-3 py-1.5 text-xs transition-colors ${
+                  activeNight === night.night_key
+                    ? 'border-neutral-900 bg-neutral-100 font-bold text-neutral-900'
+                    : 'border-gray-200 bg-white text-neutral-600'
+                }`}
+              >
+                {formatNightLabel(night.night_key)}
+              </button>
+            ))}
+          </nav>
+        )}
+
+        {activeNight && (
+          <>
+            <TimeFilterBar
+              slots={slots}
+              activeSlot={activeSlot?.slot ?? null}
+              onSelect={(slotNumber) =>
+                {
+                  setActivePhoto(null)
+                  setActiveSlot(
+                    slotNumber === null
+                      ? null
+                      : slots.find((slot) => slot.slot === slotNumber) || null,
+                  )
+                }
+              }
+            />
+            <div className="flex items-center justify-end border-b border-gray-100 px-4 pb-3">
+              <label className="flex items-center gap-2 text-xs font-semibold text-neutral-600">
+                Jump to time
+                <select
+                  aria-label="Jump to time"
+                  value={activeSlot?.slot ?? ''}
+                  onChange={(event) => {
+                    const nextSlot = slots.find(
+                      (slot) => String(slot.slot) === event.target.value,
+                    )
+                    setActivePhoto(null)
+                    setActiveSlot(nextSlot || null)
+                  }}
+                  className="max-w-36 rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-xs text-neutral-900"
+                >
+                  <option value="">All times</option>
+                  {slots.map((slot) => (
+                    <option key={`${slot.slot_start}-${slot.slot_minutes}`} value={slot.slot}>
+                      {slot.label} · {slot.photo_count}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          </>
+        )}
 
         {loadError && (
           <p role="alert" className="px-4 py-5 text-center text-sm text-red-700">
@@ -486,53 +604,97 @@ function GalleryApp() {
             Loading photos…
           </p>
         ) : (
-          <div className="grid grid-cols-3 gap-0.5 p-0.5">
-            {visiblePhotos.map((photo) => {
-              const selected = selectedIds.includes(photo.id)
-              return (
-                <article
-                  key={photo.id}
-                  className={`relative aspect-square overflow-hidden bg-gray-100 transition-shadow ${
-                    selected ? 'ring-[2.5px] ring-inset ring-blue-600' : ''
-                  }`}
+          <>
+            {photoGroups.map((group) => (
+              <section key={group.key} aria-label={`Photos at ${group.label} Athens time`}>
+                <h2 className="sticky top-16 z-20 border-y border-gray-100 bg-white/95 px-4 py-2 text-xs font-bold text-neutral-600 backdrop-blur">
+                  {group.label} Athens time
+                </h2>
+                <div className="grid grid-cols-3 gap-0.5 p-0.5">
+                  {group.photos.map((photo) => {
+                    const selected = selectedIds.includes(photo.id)
+                    return (
+                      <article
+                        key={photo.id}
+                        className={`relative aspect-square overflow-hidden bg-gray-100 transition-shadow ${
+                          selected ? 'ring-[2.5px] ring-inset ring-blue-600' : ''
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          aria-label={`Preview ${photo.filename || 'photo'}`}
+                          onClick={() => setActivePhoto(photo)}
+                          className="absolute inset-0 z-0 h-full w-full cursor-zoom-in"
+                        >
+                          <img
+                            src={photo.preview_url}
+                            alt={photo.filename || 'Photo'}
+                            loading="lazy"
+                            className={`h-full w-full object-cover ${
+                              photo.is_free ? '' : 'blur-[2px]'
+                            }`}
+                          />
+                          {!photo.is_free && <Watermark />}
+                        </button>
+                        {!photo.is_free && (
+                          <button
+                            type="button"
+                            aria-label={`${selected ? 'Deselect' : 'Select'} ${
+                              photo.filename || 'photo'
+                            }`}
+                            aria-pressed={selected}
+                            onClick={() => toggleSelected(photo.id)}
+                            className={`absolute right-2 top-2 z-20 grid h-7 w-7 place-items-center rounded-full border-2 transition-colors ${
+                              selected
+                                ? 'border-blue-600 bg-blue-600 text-white'
+                                : 'border-white/90 bg-black/25 text-transparent backdrop-blur-sm'
+                            }`}
+                          >
+                            {selected && (
+                              <Check className="h-4 w-4" strokeWidth={3} aria-hidden="true" />
+                            )}
+                          </button>
+                        )}
+                      </article>
+                    )
+                  })}
+                </div>
+              </section>
+            ))}
+            {!loading && nights.length === 0 && !loadError && (
+              <p className="px-4 py-16 text-center text-sm text-neutral-500">
+                No photos are available yet.
+              </p>
+            )}
+            {!loading && activeNight && photos.length === 0 && !loadError && (
+              <p className="px-4 py-16 text-center text-sm text-neutral-500">
+                No photos are available for this time yet.
+              </p>
+            )}
+            {hasMore && (
+              <div className="px-4 py-6 text-center">
+                {loadingMoreError && (
+                  <p role="alert" className="mb-3 text-xs text-red-700">
+                    {loadingMoreError}
+                  </p>
+                )}
+                <button
+                  type="button"
+                  disabled={loadingMore || !nextCursor}
+                  onClick={() =>
+                    loadPhotoPage({
+                      append: true,
+                      beforeTimestamp: nextCursor?.timestamp,
+                      beforePhotoId: nextCursor?.id,
+                    })
+                  }
+                  className="rounded-full border border-gray-300 px-4 py-2 text-xs font-bold disabled:opacity-50"
                 >
-                  <button
-                    type="button"
-                    aria-label={`Preview ${photo.filename || 'photo'}`}
-                    onClick={() => setActivePhoto(photo)}
-                    className="absolute inset-0 z-0 h-full w-full cursor-zoom-in"
-                  >
-                    <img
-                      src={photo.preview_url}
-                      alt={photo.filename || 'Event photo'}
-                      loading="lazy"
-                      className={`h-full w-full object-cover ${
-                        photo.is_free ? '' : 'blur-[2px]'
-                      }`}
-                    />
-                    {!photo.is_free && <Watermark />}
-                  </button>
-                  {!photo.is_free && (
-                    <button
-                      type="button"
-                      aria-label={`${selected ? 'Deselect' : 'Select'} ${
-                        photo.filename || 'photo'
-                      }`}
-                      aria-pressed={selected}
-                      onClick={() => toggleSelected(photo.id)}
-                      className={`absolute right-2 top-2 z-20 grid h-7 w-7 place-items-center rounded-full border-2 transition-colors ${
-                        selected
-                          ? 'border-blue-600 bg-blue-600 text-white'
-                          : 'border-white/90 bg-black/25 text-transparent backdrop-blur-sm'
-                      }`}
-                    >
-                      {selected && <Check className="h-4 w-4" strokeWidth={3} aria-hidden="true" />}
-                    </button>
-                  )}
-                </article>
-              )
-            })}
-          </div>
+                  {loadingMore ? 'Loading…' : 'Load more photos'}
+                </button>
+              </div>
+            )}
+          </>
         )}
 
         <GalleryFooter />
@@ -581,10 +743,11 @@ function GalleryApp() {
             onDownloadFree={() => downloadFreePhoto(activePhoto)}
             price={nextPhotoPrice(selectedCount, firstPhotoPrice, extraPhotoPrice)}
             currency={currency}
+            capturedAt={formatAthensDateTime(activePhoto.timestamp)}
             hasPrev={activePhotoIndex > 0}
-            hasNext={activePhotoIndex < visiblePhotos.length - 1}
-            onPrev={() => setActivePhoto(visiblePhotos[activePhotoIndex - 1])}
-            onNext={() => setActivePhoto(visiblePhotos[activePhotoIndex + 1])}
+            hasNext={activePhotoIndex < photos.length - 1}
+            onPrev={() => setActivePhoto(photos[activePhotoIndex - 1])}
+            onNext={() => setActivePhoto(photos[activePhotoIndex + 1])}
             onToggle={() => toggleSelected(activePhoto.id)}
             onClose={() => setActivePhoto(null)}
           />
