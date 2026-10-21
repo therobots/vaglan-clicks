@@ -47,6 +47,8 @@ export const ResponsiveImage = React.forwardRef(
               })}
               alt=""
               aria-hidden="true"
+              loading="lazy"
+              decoding="async"
               className="w-full h-full inset-0 absolute"
               style={{
                 objectFit: fittingType === "fit" ? "contain" : "cover",
@@ -62,6 +64,7 @@ export const ResponsiveImage = React.forwardRef(
               src={buildTransformUrl(parsed, options)}
               srcSet={buildSrcSet(parsed, options)}
               loading="lazy"
+              decoding="async"
               className={cn(
                 "w-full h-full inset-0 absolute",
                 fittingType === "fit" ? "object-contain" : "object-cover"

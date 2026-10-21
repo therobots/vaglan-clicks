@@ -155,6 +155,7 @@ export default function Success({ orderToken = "" }) {
                     src={photo.previewUrl}
                     alt=""
                     loading="lazy"
+                    decoding="async"
                     className="aspect-square w-full object-cover"
                   />
                 ) : (

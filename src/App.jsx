@@ -1,18 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence } from 'framer-motion'
 import { Check } from 'lucide-react'
 import GalleryFooter from '@/components/gallery/GalleryFooter'
 import GalleryHeader from '@/components/gallery/GalleryHeader'
 import LiveStatusPill from '@/components/gallery/LiveStatusPill'
-import PhotoLightbox from '@/components/gallery/PhotoLightbox'
 import CartBar from '@/components/gallery/CartBar'
-import CheckoutSheet from '@/components/gallery/CheckoutSheet'
 import ExpiryBanner from '@/components/gallery/ExpiryBanner'
 import TimeFilterBar from '@/components/gallery/TimeFilterBar'
 import GalleryTabs from '@/components/gallery/GalleryTabs'
 import PhotoRemovalDialog from '@/components/gallery/PhotoRemovalDialog'
 import Watermark from '@/components/gallery/Watermark'
-import Admin from '@/pages/Admin'
 import Info from '@/pages/Info'
 import Success from '@/pages/Success'
 import { isSupabaseConfigured, supabase } from './supabaseClient'
@@ -39,6 +36,10 @@ import {
   galleryText,
   useGalleryLanguage,
 } from '@/lib/galleryLanguage'
+
+const PhotoLightbox = lazy(() => import('@/components/gallery/PhotoLightbox'))
+const CheckoutSheet = lazy(() => import('@/components/gallery/CheckoutSheet'))
+const Admin = lazy(() => import('@/pages/Admin'))
 
 const CART_ID = 'public-gallery'
 const PAGE_SIZE = 20
@@ -109,6 +110,7 @@ function GalleryApp() {
   const [loadError, setLoadError] = useState('')
   const [connectionStatus, setConnectionStatus] = useState('connecting')
   const [checkoutOpen, setCheckoutOpen] = useState(false)
+  const [checkoutLoaded, setCheckoutLoaded] = useState(false)
   const [checkoutBusy, setCheckoutBusy] = useState(false)
   const [checkoutError, setCheckoutError] = useState('')
   const [noticeDismissed, setNoticeDismissed] = useState(() => {
@@ -832,14 +834,15 @@ function GalleryApp() {
                           className="absolute inset-0 z-0 h-full w-full cursor-zoom-in"
                         >
                           <img
-                            src={photo.preview_url}
+                            src={photo.thumbnail_url || photo.preview_url}
                             alt={photo.filename || 'Photo'}
                             loading="lazy"
+                            decoding="async"
                             className={`h-full w-full object-cover ${
                               photo.is_free ? '' : 'blur-[2px]'
                             }`}
                           />
-                          {!photo.is_free && <Watermark />}
+                          {!photo.is_free && !photo.thumbnail_url && <Watermark />}
                         </button>
                         {!photo.is_free && (
                           <button
@@ -907,55 +910,60 @@ function GalleryApp() {
             currency={currency}
             onCheckout={() => {
               setCheckoutError('')
+              setCheckoutLoaded(true)
               setCheckoutOpen(true)
             }}
           />
         )}
       </AnimatePresence>
 
-      <CheckoutSheet
-        open={checkoutOpen}
-        count={selectedCount}
-        subtotal={subtotal}
-        tipCents={safeTipCents}
-        tipOptionsCents={tipOptionsCents}
-        total={total}
-        currency={currency}
-        busy={checkoutBusy}
-        payError={checkoutError}
-        onClose={() => setCheckoutOpen(false)}
-        onTipChange={(nextTip) =>
-          setTipCents(isAllowedTip(nextTip, tipOptionsCents) ? nextTip : 0)
-        }
-        onPay={startCheckout}
-        checkoutEnabled={isSupabaseConfigured && pricingConfigured}
-      />
-
-      <AnimatePresence>
-        {activePhoto && activePhotoIndex >= 0 && (
-          <PhotoLightbox
-            photo={activePhoto}
-            selected={selectedIds.includes(activePhoto.id)}
-            isFree={Boolean(activePhoto.is_free)}
-            isDownloading={downloadingPhotoId === activePhoto.id}
-            downloadError={downloadError}
-            onDownloadFree={() => downloadFreePhoto(activePhoto)}
-            price={nextPhotoPrice(selectedCount, firstPhotoPrice, extraPhotoPrice)}
+      <Suspense fallback={null}>
+        {checkoutLoaded && (
+          <CheckoutSheet
+            open={checkoutOpen}
+            count={selectedCount}
+            subtotal={subtotal}
+            tipCents={safeTipCents}
+            tipOptionsCents={tipOptionsCents}
+            total={total}
             currency={currency}
-            capturedAt={formatAthensDateTime(activePhoto.timestamp)}
-            hasPrev={activePhotoIndex > 0}
-            hasNext={activePhotoIndex < photos.length - 1}
-            onPrev={() => setActivePhoto(photos[activePhotoIndex - 1])}
-            onNext={() => setActivePhoto(photos[activePhotoIndex + 1])}
-            onToggle={() => toggleSelected(activePhoto.id)}
-            onRequestRemoval={() => {
-              setRemovalPhoto(activePhoto)
-              setRemovalError('')
-            }}
-            onClose={() => setActivePhoto(null)}
+            busy={checkoutBusy}
+            payError={checkoutError}
+            onClose={() => setCheckoutOpen(false)}
+            onTipChange={(nextTip) =>
+              setTipCents(isAllowedTip(nextTip, tipOptionsCents) ? nextTip : 0)
+            }
+            onPay={startCheckout}
+            checkoutEnabled={isSupabaseConfigured && pricingConfigured}
           />
         )}
-      </AnimatePresence>
+
+        <AnimatePresence>
+          {activePhoto && activePhotoIndex >= 0 && (
+            <PhotoLightbox
+              photo={activePhoto}
+              selected={selectedIds.includes(activePhoto.id)}
+              isFree={Boolean(activePhoto.is_free)}
+              isDownloading={downloadingPhotoId === activePhoto.id}
+              downloadError={downloadError}
+              onDownloadFree={() => downloadFreePhoto(activePhoto)}
+              price={nextPhotoPrice(selectedCount, firstPhotoPrice, extraPhotoPrice)}
+              currency={currency}
+              capturedAt={formatAthensDateTime(activePhoto.timestamp)}
+              hasPrev={activePhotoIndex > 0}
+              hasNext={activePhotoIndex < photos.length - 1}
+              onPrev={() => setActivePhoto(photos[activePhotoIndex - 1])}
+              onNext={() => setActivePhoto(photos[activePhotoIndex + 1])}
+              onToggle={() => toggleSelected(activePhoto.id)}
+              onRequestRemoval={() => {
+                setRemovalPhoto(activePhoto)
+                setRemovalError('')
+              }}
+              onClose={() => setActivePhoto(null)}
+            />
+          )}
+        </AnimatePresence>
+      </Suspense>
       <PhotoRemovalDialog
         open={Boolean(removalPhoto)}
         language={language}
@@ -970,7 +978,7 @@ function GalleryApp() {
 
 export default function App() {
   const pathname = window.location.pathname.replace(/\/+$/, '')
-  if (pathname === '/admin') return <Admin />
+  if (pathname === '/admin') return <Suspense fallback={null}><Admin /></Suspense>
   if (pathname === '/success') return <Success />
   if (pathname === '/info') return <Info />
   if (pathname.startsWith('/orders/')) {

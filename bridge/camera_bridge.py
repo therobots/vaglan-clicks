@@ -17,8 +17,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from PIL import ExifTags, Image, ImageOps
 from supabase import Client, create_client
 
-PREVIEW_BUCKET = "previews"
-ORIGINALS_BUCKET = "originals"
+PREVIEW_BUCKET = "public-previews"
+ORIGINALS_BUCKET = "private-originals"
 PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
 PHOTO_NAMESPACE = uuid.UUID("08650d10-527c-4c78-bec7-572573cd1d83")
 LOG = logging.getLogger("camera_bridge")
@@ -59,26 +59,44 @@ def athens_night_key(timestamp_ms: int) -> str:
     return (capture.astimezone(ZoneInfo("Europe/Athens")) - timedelta(hours=12)).date().isoformat()
 
 
-def prepare_preview(source: Path, watermark_path: Path, destination: Path) -> None:
+def prepare_previews(
+    source: Path,
+    watermark_path: Path,
+    preview_destination: Path,
+    thumbnail_destination: Path,
+) -> None:
     with Image.open(source) as opened:
         image = ImageOps.exif_transpose(opened).convert("RGBA")
-    image.thumbnail((1080, 1080), Image.Resampling.LANCZOS)
+    if image.width > 1280:
+        preview_height = max(1, round(image.height * 1280 / image.width))
+        image = image.resize((1280, preview_height), Image.Resampling.LANCZOS)
 
     with Image.open(watermark_path) as opened_watermark:
         watermark = opened_watermark.convert("RGBA")
     max_watermark_size = (max(1, int(image.width * 0.7)), max(1, int(image.height * 0.7)))
     watermark.thumbnail(max_watermark_size, Image.Resampling.LANCZOS)
-
-    layer = Image.new("RGBA", image.size, (0, 0, 0, 0))
     position = ((image.width - watermark.width) // 2, (image.height - watermark.height) // 2)
-    layer.alpha_composite(watermark, position)
-    image = Image.alpha_composite(image, layer).convert("RGB")
-    image.save(destination, format="WEBP", quality=60, method=6)
+    image.alpha_composite(watermark, position)
+
+    image.convert("RGB").save(preview_destination, format="WEBP", quality=75, method=6)
+    thumbnail = image
+    if thumbnail.width > 300:
+        thumbnail_height = max(1, round(thumbnail.height * 300 / thumbnail.width))
+        thumbnail = thumbnail.resize((300, thumbnail_height), Image.Resampling.LANCZOS)
+    thumbnail.convert("RGB").save(thumbnail_destination, format="WEBP", quality=75, method=6)
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as image:
+        for chunk in iter(lambda: image.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def upload_photo(client: Client, source: Path, watermark_path: Path, camera_timezone: ZoneInfo,
                  offset_seconds: float) -> bool:
-    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    digest = file_sha256(source)
     photo_id = str(uuid.uuid5(PHOTO_NAMESPACE, digest))
     timestamp_ms: int
     with Image.open(source) as image:
@@ -89,6 +107,7 @@ def upload_photo(client: Client, source: Path, watermark_path: Path, camera_time
     base_name = f"{photo_id}-{safe_filename(source.name)}"
     original_path = f"{night_key}/{base_name}{suffix}"
     preview_path = f"{night_key}/{photo_id}-{safe_filename(source.name)}.webp"
+    thumbnail_path = f"{night_key}/thumbs/{photo_id}-{safe_filename(source.name)}.webp"
 
     existing = (
         client.table("photos")
@@ -102,8 +121,10 @@ def upload_photo(client: Client, source: Path, watermark_path: Path, camera_time
         return False
 
     preview_file = source.with_name(f".{photo_id}.preview.webp")
+    thumbnail_file = source.with_name(f".{photo_id}.thumbnail.webp")
     original_uploaded = False
     preview_uploaded = False
+    thumbnail_uploaded = False
     row_created = False
     try:
         mime_type = mimetypes.guess_type(source.name)[0] or "application/octet-stream"
@@ -115,21 +136,38 @@ def upload_photo(client: Client, source: Path, watermark_path: Path, camera_time
             )
         original_uploaded = True
 
-        prepare_preview(source, watermark_path, preview_file)
+        prepare_previews(source, watermark_path, preview_file, thumbnail_file)
         with preview_file.open("rb") as preview:
             client.storage.from_(PREVIEW_BUCKET).upload(
                 preview_path,
                 preview,
-                file_options={"content-type": "image/webp", "upsert": "false"},
+                file_options={
+                    "content-type": "image/webp",
+                    "cache-control": "31536000",
+                    "upsert": "false",
+                },
             )
         preview_uploaded = True
+        with thumbnail_file.open("rb") as thumbnail:
+            client.storage.from_(PREVIEW_BUCKET).upload(
+                thumbnail_path,
+                thumbnail,
+                file_options={
+                    "content-type": "image/webp",
+                    "cache-control": "31536000",
+                    "upsert": "false",
+                },
+            )
+        thumbnail_uploaded = True
 
         preview_url = client.storage.from_(PREVIEW_BUCKET).get_public_url(preview_path)
+        thumbnail_url = client.storage.from_(PREVIEW_BUCKET).get_public_url(thumbnail_path)
         client.rpc(
             "register_ingested_photo",
             {
                 "photo_id_input": photo_id,
                 "preview_url_input": preview_url,
+                "thumbnail_url_input": thumbnail_url,
                 "filename_input": source.name[:255],
                 "timestamp_input": timestamp_ms,
                 "original_path_input": original_path,
@@ -150,6 +188,11 @@ def upload_photo(client: Client, source: Path, watermark_path: Path, camera_time
                 client.storage.from_(PREVIEW_BUCKET).remove([preview_path])
             except Exception:
                 LOG.exception("Could not remove failed preview upload %s.", preview_path)
+        if thumbnail_uploaded:
+            try:
+                client.storage.from_(PREVIEW_BUCKET).remove([thumbnail_path])
+            except Exception:
+                LOG.exception("Could not remove failed thumbnail upload %s.", thumbnail_path)
         if original_uploaded:
             try:
                 client.storage.from_(ORIGINALS_BUCKET).remove([original_path])
@@ -158,6 +201,7 @@ def upload_photo(client: Client, source: Path, watermark_path: Path, camera_time
         raise
     finally:
         preview_file.unlink(missing_ok=True)
+        thumbnail_file.unlink(missing_ok=True)
 
 
 def wait_until_stable(path: Path, stable_checks: int = 3, interval_seconds: float = 1.0) -> bool:
@@ -186,7 +230,12 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(message)s",
     )
     watch_dir = Path(required_env("CAMERA_WATCH_DIR")).expanduser().resolve()
-    watermark_path = Path(os.environ.get("WATERMARK_IMAGE", "watermark_logo.png")).expanduser().resolve()
+    watermark_value = os.environ.get("WATERMARK_IMAGE")
+    watermark_path = (
+        Path(watermark_value).expanduser().resolve()
+        if watermark_value
+        else Path(__file__).resolve().parent.parent / "src" / "assets" / "watermark.png"
+    )
     if not watch_dir.is_dir():
         raise RuntimeError(f"CAMERA_WATCH_DIR is not a directory: {watch_dir}")
     if not watermark_path.is_file():

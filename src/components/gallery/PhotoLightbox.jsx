@@ -203,11 +203,12 @@ export default function PhotoLightbox({
               <img
                 src={photo.preview_url}
                 alt={photo.filename || "Photo preview"}
-                loading="lazy"
+                loading="eager"
+                decoding="async"
                 draggable={false}
                 className="max-h-full max-w-full object-contain"
               />
-              {!isFree && <Watermark large />}
+              {!isFree && !photo.thumbnail_url && <Watermark large />}
             </div>
           </motion.div>
         </AnimatePresence>

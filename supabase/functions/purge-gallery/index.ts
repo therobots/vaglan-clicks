@@ -1,7 +1,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 
-const previewBuckets = ["previews", "photos"] as const;
-const originalsBuckets = ["originals", "photo-originals"] as const;
+const previewBuckets = ["public-previews", "previews", "photos"] as const;
+const originalsBuckets = ["private-originals", "originals", "photo-originals"] as const;
 const corsHeaders = {
   "Access-Control-Allow-Headers": "content-type, x-purge-secret",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
@@ -11,6 +11,7 @@ const corsHeaders = {
 type PurgeCandidate = {
   photo_id: string;
   preview_url: string | null;
+  thumbnail_url: string | null;
   preview_bucket: string;
   original_path: string | null;
   original_bucket: string | null;
@@ -87,7 +88,9 @@ Deno.serve(async (request) => {
     );
     if (candidateError) throw candidateError;
     const rows = (candidates || []) as PurgeCandidate[];
-    const previewCount = rows.filter((candidate) => candidate.preview_url).length;
+    const previewCount = rows.filter(
+      (candidate) => candidate.preview_url || candidate.thumbnail_url,
+    ).length;
     const originalsCount = rows.filter(
       (candidate) => candidate.delete_original && candidate.original_path,
     ).length;
@@ -120,6 +123,13 @@ Deno.serve(async (request) => {
           const { error } = await client.storage.from(preview.bucket).remove([preview.path]);
           if (error) throw error;
           deletedPreviews += 1;
+        }
+        if (candidate.thumbnail_url) {
+          const thumbnail = getPreviewLocation(candidate.thumbnail_url, supabaseUrl);
+          const { error } = await client.storage
+            .from(thumbnail.bucket)
+            .remove([thumbnail.path]);
+          if (error) throw error;
         }
         if (candidate.delete_original && candidate.original_path) {
           const originalBucket = candidate.original_bucket || "photo-originals";

@@ -13,6 +13,8 @@ export default function Watermark({ large = false }) {
       <img
         src={watermarkImg}
         alt="Vaglan Clicks Watermark"
+        loading="lazy"
+        decoding="async"
         className={`object-contain opacity-50 transition-all duration-200 ${
           large 
             ? "w-[80%] max-w-[700px] max-h-[75vh]"  /* Balanced size for the zoomed lightbox */

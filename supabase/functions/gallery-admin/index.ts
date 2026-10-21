@@ -5,8 +5,8 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, apikey, x-client-info, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
-const previewBuckets = ["previews", "photos"] as const;
-const originalsBuckets = ["originals", "photo-originals"] as const;
+const previewBuckets = ["public-previews", "previews", "photos"] as const;
+const originalsBuckets = ["private-originals", "originals", "photo-originals"] as const;
 const sessionDurationMs = 4 * 60 * 60 * 1000;
 const maxLoginFailures = 5;
 const loginWindowMs = 15 * 60 * 1000;
@@ -94,13 +94,16 @@ const deletePhotoFiles = async (
 ) => {
   const { data: photo, error: photoError } = await client
     .from("photos")
-    .select("id, preview_url")
+    .select("id, preview_url, thumbnail_url")
     .eq("id", photoId)
     .maybeSingle();
   if (photoError) throw photoError;
   if (!photo) return false;
 
   const preview = getPreviewPath(photo.preview_url, supabaseUrl);
+  const thumbnail = photo.thumbnail_url
+    ? getPreviewPath(photo.thumbnail_url, supabaseUrl)
+    : null;
   const { data: original, error: originalError } = await client.rpc(
     "get_photo_original_info",
     { photo_id_input: photo.id },
@@ -112,16 +115,16 @@ const deletePhotoFiles = async (
   ) {
     throw new Error("Original photo storage metadata is unavailable.");
   }
-  const [originalRemoval, previewRemoval] = await Promise.all([
+  const removals = await Promise.all([
     client.storage.from(original.storage_bucket).remove([original.object_path]),
     client.storage.from(preview.bucket).remove([preview.path]),
+    ...(thumbnail
+      ? [client.storage.from(thumbnail.bucket).remove([thumbnail.path])]
+      : []),
   ]);
-  if (originalRemoval.error || previewRemoval.error) {
+  if (removals.some((removal) => removal.error)) {
     throw new Error(
-      [
-        originalRemoval.error?.message && `Original: ${originalRemoval.error.message}`,
-        previewRemoval.error?.message && `Preview: ${previewRemoval.error.message}`,
-      ].filter(Boolean).join("; "),
+      removals.map((removal) => removal.error?.message).filter(Boolean).join("; "),
     );
   }
   const { error: metadataError } = await client.rpc("delete_photo_original_path", {
@@ -260,7 +263,7 @@ Deno.serve(async (request) => {
       while (true) {
         const { data, error } = await client
           .from("photos")
-          .select("id, preview_url, filename, timestamp, created_at, is_free, is_hidden, expires_at")
+          .select("id, preview_url, thumbnail_url, filename, timestamp, created_at, is_free, is_hidden, expires_at")
           .order("timestamp", { ascending: false })
           .range(offset, offset + 999);
         if (error) throw error;

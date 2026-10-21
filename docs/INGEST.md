@@ -1,6 +1,19 @@
-# Photo ingestion contract
+# Camera bridge and photo ingestion
 
-The current repository does not contain the camera-ingestion agent. Any uploader integrated with this gallery must follow this contract before it is used in production.
+The repository includes [`bridge/camera_bridge.py`](../bridge/camera_bridge.py), a local folder watcher and uploader. It stores untouched originals in the private `private-originals` bucket and creates a watermarked WebP preview plus a 300px WebP thumbnail in the public `public-previews` bucket. Public image objects receive a one-year cache lifetime. The physical watermark uses `src/assets/watermark.png`; override its location with `WATERMARK_IMAGE` if needed.
+
+Install and run the bridge from the repository root in PowerShell:
+
+```powershell
+python -m pip install -r bridge\requirements.txt
+$env:CAMERA_WATCH_DIR = "C:\path\to\camera\folder"
+$env:SUPABASE_URL = "https://YOUR_PROJECT_REF.supabase.co"
+$env:SUPABASE_SERVICE_ROLE_KEY = "YOUR_SERVER_SIDE_SERVICE_ROLE_KEY"
+$env:CAMERA_TIMEZONE = "Europe/Athens"
+python bridge\camera_bridge.py
+```
+
+The bridge requires the active Supabase migrations, including `20261021170000_watermarked_photo_delivery.sql`, before it can register photos. The service-role key is privileged: keep it only in the trusted local process environment, never in frontend variables, source control, or browser code.
 
 ## Capture timestamps
 
@@ -13,9 +26,9 @@ The current repository does not contain the camera-ingestion agent. Any uploader
 ## Night grouping and storage
 
 - Compute `night_key` using the server's `gallery_night_key(timestamp)` function. Its rule is the Athens-local date of the capture time shifted back by 12 hours, so after-midnight captures remain grouped with the previous evening.
-- Store preview and original objects under a night-prefixed path: `<night_key>/<photo-uuid>-<filename>`. Use the same night key for both versions.
+- Store original and preview objects under night-prefixed paths: `<night_key>/<photo-uuid>-<filename>`. Store thumbnails under `<night_key>/thumbs/<photo-uuid>-<filename>.webp`.
 - Keep uploads in the single permanent gallery collection; use the night key for organization.
 - The database insert trigger computes `photos.expires_at`; upload clients must not set or override it.
-- Use the secured server-side ingestion endpoint rather than writing directly to the `photos` table or Storage with the public anon key.
+- The bridge uses the service role only in its trusted local process to upload the three assets and register their paths. Never upload originals from browser code or with the public anon key.
 
 Before enabling ingestion, verify the laptop is NTP-synchronized, run the camera drift check, and confirm the corrected timestamp resolves to the expected Athens night.

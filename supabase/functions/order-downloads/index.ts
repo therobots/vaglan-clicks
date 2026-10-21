@@ -89,7 +89,7 @@ Deno.serve(async (request) => {
         .replace(/[^\w.-]/g, "_")
         .slice(0, 160);
       const originalBucket = item.original_bucket || "photo-originals";
-      if (!["originals", "photo-originals"].includes(originalBucket)) {
+      if (!["private-originals", "originals", "photo-originals"].includes(originalBucket)) {
         throw new Error("The order contains an invalid original storage bucket.");
       }
       const { data, error } = await supabase.storage

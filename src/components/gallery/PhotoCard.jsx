@@ -7,13 +7,14 @@ export default function PhotoCard({ photo, selected, onToggle, onOpen }) {
   return (
     <div className="relative aspect-[3/4] overflow-hidden bg-neutral-100 select-none">
       <Image
-        src={photo.preview_url}
+        src={photo.thumbnail_url || photo.preview_url}
         alt={photo.filename || "Photo preview"}
         loading="lazy"
+        decoding="async"
         sizes="(max-width: 768px) 33vw, 220px"
         className="absolute inset-0 h-full w-full scale-[1.04] blur-[2px]"
       />
-      <Watermark />
+      {!photo.is_free && !photo.thumbnail_url && <Watermark />}
 
       <button
         type="button"

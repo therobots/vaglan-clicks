@@ -14,17 +14,19 @@ npx supabase db dump --linked --schema public -f C:\private-backups\vaglan-publi
 npx supabase db dump --linked --data-only --schema public -f C:\private-backups\vaglan-public-data-before-hardening.sql
 ```
 
-Keep the dumps in a private backup location and do not commit them. Also create a Supabase-managed database backup or point-in-time restore point before production changes, and separately back up the Storage objects and bucket configuration in `photos` and `photo-originals`; database dumps do not contain the stored image files. `C:\private-backups` is an example; replace it with a protected local folder.
+Keep the dumps in a private backup location and do not commit them. Also create a Supabase-managed database backup or point-in-time restore point before production changes, and separately back up the Storage objects and bucket configuration in `photos`, `photo-originals`, `previews`, `originals`, `public-previews`, and `private-originals`; database dumps do not contain the stored image files. `C:\private-backups` is an example; replace it with a protected local folder.
 
 ## Apply the migrations
 
-Review migration SQL against the captured schema, then apply migrations in timestamp order. `20261020000000_admin_timer_free_photos.sql` is additive for the existing gallery schema; `20261020091500_harden_public_gallery_access.sql` hardens public photo, legacy timer, and storage access; `20261020100000_stripe_checkout.sql` adds server-priced payment records; `20261020110000_night_retention_and_gallery_queries.sql` adds Athens-night navigation, hidden/expiry fields, and read-only gallery RPCs; and `20261020120000_photo_removal_requests.sql` adds removal requests and expanded admin reports. The migrations do not replace the `photos` table. The hardening migration moves the existing admin PIN hash from `public.gallery_state` into `private.gallery_admin_credentials`.
+Review migration SQL against the captured schema, then apply migrations in timestamp order. `20261020100000_stripe_checkout.sql` is a historical bootstrap migration retained because later payment migrations extend its server-priced order tables; Stripe checkout is deprecated and Viva Wallet is the active provider. Continue applying it in order for fresh databases. `20261020120000_photo_removal_requests.sql` adds removal requests and expanded admin reports; `20261020130000_viva_storage_ingest.sql` adds Viva payment verification and secure photo ingestion; `20261021170000_watermarked_photo_delivery.sql` adds thumbnail metadata, the new public/private Storage buckets, and the updated gallery RPC contract. The migrations do not replace the `photos` table. The hardening migration moves the existing admin PIN hash from `public.gallery_state` into `private.gallery_admin_credentials`.
 
 For production, have an authorized operator apply all reviewed active migration files in timestamp order through the Supabase Dashboard SQL Editor or the project's approved migration workflow. The checkout migration adds server-priced EUR orders and payment records; the gallery migration safely backfills missing expiry values to at least 48 hours from migration time. Verify `public.photos` still contains its existing rows and that existing rows have future `expires_at` values after migration.
 
-The hardening migration intentionally revokes direct anonymous/authenticated writes to Storage. Any camera uploader currently using the anon key to upload photos will stop working until a secure ingestion function is deployed. Schedule that cutover to avoid interrupting photo uploads. Follow [`INGEST.md`](./INGEST.md) for required UTC timestamps, Athens night grouping, and storage paths; this repository does not currently contain a camera-ingestion agent.
+The new buckets are used by future camera-bridge uploads. Existing image objects and URLs in legacy buckets are not moved by this migration and remain supported; migrate those objects separately if you want to consolidate them.
 
-The old migration is archived at `supabase\archive\20261019210000_gallery_security.sql` only for reference and must not be applied to this existing project.
+The hardening migration intentionally revokes direct anonymous/authenticated writes to Storage. The local camera bridge needs the service-role key in its trusted process environment; never put it in frontend configuration. Follow [`INGEST.md`](./INGEST.md) for bridge setup, required UTC timestamps, Athens night grouping, and storage paths.
+
+The old migration is archived at `sql-archive\20261019210000_gallery_security.sql` only for reference and must not be applied to this existing project.
 
 ## Per-night expiry and scheduled purge
 
@@ -123,13 +125,13 @@ The `/info` page contains an English/Greek overview, but its legal language is n
 
 - [ ] Add the photographer's legal name or business name, registered/contact address, and monitored privacy/support email.
 - [ ] Publish the data controller identity, contact method, purposes and legal bases for gallery, checkout, receipt delivery, fraud prevention, and removal-request processing.
-- [ ] Document categories of data, recipients/processors (including Supabase, Stripe, and any email provider), international transfers, retention periods, and how people exercise their rights or contact the relevant supervisory authority.
+- [ ] Document categories of data, recipients/processors (including Supabase and Viva Payments), international transfers, retention periods, and how people exercise their rights or contact the relevant supervisory authority.
 - [ ] Confirm consent/notice requirements for photography at each venue, the lawful basis for publishing identifiable people, and a procedure for minors and sensitive situations.
 - [ ] Confirm cookie/local-storage disclosures and retention for the selected-photo cart and dismissed notice.
 - [ ] Publish pricing, taxes/VAT treatment, payment and delivery terms, cancellation/refund policy, and the correct consumer withdrawal-rights information for digital content.
 - [ ] Confirm copyright/licensing terms for purchased downloads, permitted use, and the process for intellectual-property or privacy complaints.
 - [ ] Test the removal-request process end to end, including immediate hiding, the ten-per-hour/IP limit, high-volume flagging, admin restoration, permanent deletion, and impact on previous paid downloads.
-- [ ] Replace or verify all explanatory placeholders on `/info`, in Stripe Checkout, and in receipt emails before launch.
+- [ ] Replace or verify all explanatory placeholders on `/info` and in Viva checkout before launch.
 
 Do not treat a completed checklist as legal approval; obtain the required professional review and retain the reviewed policy versions.
 
@@ -161,27 +163,28 @@ This intentionally hides the first ten fixtures and verifies that request eleven
 
 The Info page smoke test runs with Playwright and Vite; install Chromium once with `npx playwright install chromium`, then run `npm run test:e2e`. It checks the Info route, language switching and document `lang`, and navigation back to the gallery.
 
-## Stripe checkout and secure downloads
+## Viva Wallet checkout and secure downloads
 
-Back up production data and apply the active migrations in timestamp order before deploying payment functions. The checkout migration adds server-priced EUR orders and payment-event/download-rate-limit records without replacing the existing photo table or deleting gallery rows. Confirm that the private `photo-originals` bucket and `private.photo_originals` map are populated before enabling checkout; a photo without an original cannot be purchased.
+Back up production data and apply the migrations in timestamp order before deploying payment functions. `create-viva-order` asks the database to validate the selected photos and calculate the EUR total from server-side prices; the browser-provided amount is never trusted. Confirm that original objects are in private Storage and have paths recorded in `private.photo_originals`; a photo without an original cannot be purchased.
 
 Configure these Supabase Edge Function secrets in the Dashboard or approved secret manager; never put them in `.env.local` or Vite `VITE_*` variables:
 
-- `STRIPE_SECRET_KEY`: Stripe test secret key for initial verification.
-- `STRIPE_WEBHOOK_SECRET`: signing secret for the deployed webhook endpoint.
+- `VIVA_ENVIRONMENT`: `demo` for testing or `live` for real payments.
+- `VIVA_CLIENT_ID` and `VIVA_CLIENT_SECRET`: Viva API credentials.
+- `VIVA_SOURCE_CODE`: the merchant source code enabled for redirect checkout.
+- `VIVA_WEBHOOK_KEY`: a high-entropy secret configured as the webhook authorization key.
 - `SITE_URL`: public HTTPS origin of the gallery (for example, `https://gallery.example.com`).
-- `RESEND_API_KEY` and `EMAIL_FROM`: receipt delivery configuration. Email failures are logged and do not change the already-verified payment status; the success page can also retrieve the order with Stripe's checkout session reference.
 
 Deploy the functions to the same project as `VITE_SUPABASE_URL`:
 
 ```powershell
-npx supabase functions deploy create-checkout-session
+npx supabase functions deploy create-viva-order
 npx supabase functions deploy order-downloads
-npx supabase functions deploy stripe-webhook
+npx supabase functions deploy viva-webhook --no-verify-jwt
 ```
 
-In Stripe test mode, register `https://YOUR_PROJECT_REF.supabase.co/functions/v1/stripe-webhook` and subscribe to `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.expired`, `charge.refunded`, and `charge.dispute.created`. The webhook function intentionally has JWT verification disabled because Stripe authenticates requests with its signature; the other two functions require the Supabase JWT sent by the frontend. Configure Apple Pay and Google Pay in Stripe Checkout settings if those wallet methods are desired.
+Configure Viva to send payment notifications to `https://YOUR_PROJECT_REF.supabase.co/functions/v1/viva-webhook` with the `Key YOUR_VIVA_WEBHOOK_KEY` authorization header. The webhook independently looks up each transaction with Viva and checks its order reference, completed status, amount, and EUR currency before marking an order paid. `create-viva-order` and `order-downloads` require the Supabase JWT; the webhook authenticates using the configured secret.
 
-Gallery pricing is configured in `public.gallery_state.first_photo_cents` (default `200`), `extra_photo_cents` (default `50`), and `tip_options_cents` (fixed to `[0,100,200,300]`). The server calculates the total and Stripe receives separate line items for the first photo, additional photos, and an optional tip. The `private.orders` row stores `subtotal_cents`, `tip_cents`, and `total_cents`; the webhook compares Stripe's final `amount_total` against `total_cents` before marking a purchase paid.
+Gallery pricing is configured in `public.gallery_state.first_photo_cents` (default `200`), `extra_photo_cents` (default `50`), and `tip_options_cents` (fixed to `[0,100,200,300]`). The `private.orders` row stores `subtotal_cents`, `tip_cents`, and `total_cents`; the webhook compares Viva's verified transaction amount against the recorded total. The webhook does not return private download URLs. Once payment is confirmed, `order-downloads` validates the private order token and creates 15-minute signed URLs from the recorded private original bucket.
 
-Run `npm test` for the client and Edge Function shared pricing tests. In Stripe test mode, verify one, two, three, and ten photos total EUR 2.00, 2.50, 3.00, and 6.50. For three photos plus a EUR 2 tip, verify EUR 5.00; test EUR 3 tips across a reload, invalid tip values, and reject an empty photo selection. Then confirm unpaid/expired sessions do not unlock downloads, and signed original URLs expire after 15 minutes. Exercise full and partial refunds, webhook retries, and payment confirmation delays. Only after these checks should an authorized operator switch the Stripe secret/webhook to live mode. Do not paste secrets into chat, source control, or build-time frontend environment variables.
+Run `npm test` for the shared pricing tests. In Viva demo mode, verify one, two, three, and ten photos total EUR 2.00, 2.50, 3.00, and 6.50. For three photos plus a EUR 2 tip, verify EUR 5.00; test EUR 3 tips across a reload, invalid tip values, and reject an empty photo selection. Confirm unpaid/expired orders do not unlock downloads, signed original URLs expire after 15 minutes, and duplicate webhook notifications do not double-process payment. Only after these checks should an authorized operator switch Viva to live mode. Do not paste secrets into chat, source control, or build-time frontend environment variables.

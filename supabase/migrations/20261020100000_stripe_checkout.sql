@@ -1,3 +1,5 @@
+-- Historical bootstrap migration retained for database migration lineage.
+-- Stripe checkout was superseded by Viva Wallet; do not add new Stripe flows here.
 create extension if not exists pgcrypto;
 
 alter table public.gallery_state

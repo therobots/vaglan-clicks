@@ -481,9 +481,10 @@ export default function Admin() {
                 {filteredPhotos.map((photo) => (
                   <article key={photo.id} className="overflow-hidden rounded-xl border border-gray-200 bg-white">
                     <img
-                      src={photo.preview_url}
+                      src={photo.thumbnail_url || photo.preview_url}
                       alt={photo.filename || 'Gallery photo'}
                       loading="lazy"
+                      decoding="async"
                       className="aspect-square w-full object-cover"
                     />
                     <div className="p-3">
