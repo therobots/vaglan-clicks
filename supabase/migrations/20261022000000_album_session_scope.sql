@@ -209,7 +209,7 @@ as $$
   limit greatest(1, least(coalesce(limit_input, 60), 100));
 $$;
 
-revoke all on function public.register_ingested_photo(uuid, text, text, text, bigint, text, text)
+revoke all on function public.register_ingested_photo
   from public, anon, authenticated;
 revoke all on function public.gallery_nights(text)
   from public, anon, authenticated;
