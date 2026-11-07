@@ -196,6 +196,7 @@ export default function PhotoLightbox({
           >
             <div
               className="relative flex h-full w-full select-none items-center justify-center"
+              onContextMenu={(e) => e.preventDefault()}
               style={{
                 transform: `translate3d(${zoom.x}px, ${zoom.y}px, 0) scale(${zoom.scale})`,
               }}
@@ -206,7 +207,8 @@ export default function PhotoLightbox({
                 loading="eager"
                 decoding="async"
                 draggable={false}
-                className="max-h-full max-w-full object-contain"
+                onContextMenu={(e) => e.preventDefault()}
+                className="max-h-full max-w-full object-contain pointer-events-none select-none"
               />
               {!isFree && !photo.thumbnail_url && <Watermark large />}
             </div>

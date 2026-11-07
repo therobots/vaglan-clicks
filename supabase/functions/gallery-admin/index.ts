@@ -274,6 +274,140 @@ Deno.serve(async (request) => {
       return respond({ photos });
     }
 
+    if (action === "ingest-photo") {
+      const newPhotoId = typeof payload.photoId === "string" && uuidPattern.test(payload.photoId)
+        ? payload.photoId
+        : crypto.randomUUID();
+      const filename = typeof payload.filename === "string" ? payload.filename : "photo.jpg";
+      const timestamp = typeof payload.timestamp === "number" ? payload.timestamp : Date.now();
+      const albumId = typeof payload.albumId === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(payload.albumId)
+        ? payload.albumId
+        : "general";
+      const previewBase64 = typeof payload.previewBase64 === "string" ? payload.previewBase64 : "";
+      const thumbnailBase64 = typeof payload.thumbnailBase64 === "string" ? payload.thumbnailBase64 : "";
+      const originalBase64 = typeof payload.originalBase64 === "string" ? payload.originalBase64 : "";
+      const originalMimeType = typeof payload.originalMimeType === "string" ? payload.originalMimeType : "image/jpeg";
+
+      if (!previewBase64 || !thumbnailBase64) {
+        return respond({ error: "Missing watermarked preview or thumbnail data." }, 400);
+      }
+
+      const capture = new Date(timestamp);
+      const nightDate = new Date(capture.getTime() - 12 * 60 * 60 * 1000);
+      const nightKey = nightDate.toISOString().slice(0, 10);
+      const stem = filename.replace(/\.[^.]+$/, "").replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 80) || "photo";
+      const suffix = filename.includes(".") ? filename.slice(filename.lastIndexOf(".")).toLowerCase() : ".jpg";
+      const baseName = `${newPhotoId}-${stem}`;
+      const originalPath = `${nightKey}/${baseName}${suffix}`;
+      const previewPath = `${nightKey}/${baseName}.webp`;
+      const thumbnailPath = `${nightKey}/thumbs/${baseName}.webp`;
+
+      const previewBytes = Uint8Array.from(atob(previewBase64), (c) => c.charCodeAt(0));
+      const thumbBytes = Uint8Array.from(atob(thumbnailBase64), (c) => c.charCodeAt(0));
+
+      if (originalBase64) {
+        const origBytes = Uint8Array.from(atob(originalBase64), (c) => c.charCodeAt(0));
+        const { error: origUploadError } = await client.storage
+          .from("private-originals")
+          .upload(originalPath, origBytes, {
+            contentType: originalMimeType,
+            upsert: true,
+          });
+        if (origUploadError) throw origUploadError;
+      }
+
+      const { error: prevUploadError } = await client.storage
+        .from("public-previews")
+        .upload(previewPath, previewBytes, {
+          contentType: "image/webp",
+          cacheControl: "31536000",
+          upsert: true,
+        });
+      if (prevUploadError) throw prevUploadError;
+
+      const { error: thumbUploadError } = await client.storage
+        .from("public-previews")
+        .upload(thumbnailPath, thumbBytes, {
+          contentType: "image/webp",
+          cacheControl: "31536000",
+          upsert: true,
+        });
+      if (thumbUploadError) throw thumbUploadError;
+
+      const previewUrl = client.storage.from("public-previews").getPublicUrl(previewPath).data.publicUrl;
+      const thumbnailUrl = client.storage.from("public-previews").getPublicUrl(thumbnailPath).data.publicUrl;
+
+      const { error: rpcError } = await client.rpc("register_ingested_photo", {
+        photo_id_input: newPhotoId,
+        preview_url_input: previewUrl,
+        thumbnail_url_input: thumbnailUrl,
+        filename_input: filename.slice(0, 255),
+        timestamp_input: timestamp,
+        original_path_input: originalPath,
+        original_bucket_input: "private-originals",
+        album_id_input: albumId,
+      });
+      if (rpcError) throw rpcError;
+
+      return respond({ success: true, photoId: newPhotoId, previewUrl, thumbnailUrl });
+    }
+
+    if (action === "update-photo-preview") {
+      const targetPhotoId = typeof payload.photoId === "string" && uuidPattern.test(payload.photoId)
+        ? payload.photoId
+        : "";
+      if (!targetPhotoId) return respond({ error: "Invalid photo ID." }, 400);
+
+      const filename = typeof payload.filename === "string" ? payload.filename : "photo.jpg";
+      const timestamp = typeof payload.timestamp === "number" ? payload.timestamp : Date.now();
+      const previewBase64 = typeof payload.previewBase64 === "string" ? payload.previewBase64 : "";
+      const thumbnailBase64 = typeof payload.thumbnailBase64 === "string" ? payload.thumbnailBase64 : "";
+
+      if (!previewBase64 || !thumbnailBase64) {
+        return respond({ error: "Missing watermarked preview or thumbnail data." }, 400);
+      }
+
+      const capture = new Date(timestamp);
+      const nightDate = new Date(capture.getTime() - 12 * 60 * 60 * 1000);
+      const nightKey = nightDate.toISOString().slice(0, 10);
+      const stem = filename.replace(/\.[^.]+$/, "").replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 80) || "photo";
+      const baseName = `${targetPhotoId}-${stem}`;
+      const previewPath = `${nightKey}/${baseName}.webp`;
+      const thumbnailPath = `${nightKey}/thumbs/${baseName}.webp`;
+
+      const previewBytes = Uint8Array.from(atob(previewBase64), (c) => c.charCodeAt(0));
+      const thumbBytes = Uint8Array.from(atob(thumbnailBase64), (c) => c.charCodeAt(0));
+
+      const { error: prevError } = await client.storage
+        .from("public-previews")
+        .upload(previewPath, previewBytes, {
+          contentType: "image/webp",
+          cacheControl: "31536000",
+          upsert: true,
+        });
+      if (prevError) throw prevError;
+
+      const { error: thumbError } = await client.storage
+        .from("public-previews")
+        .upload(thumbnailPath, thumbBytes, {
+          contentType: "image/webp",
+          cacheControl: "31536000",
+          upsert: true,
+        });
+      if (thumbError) throw thumbError;
+
+      const previewUrl = client.storage.from("public-previews").getPublicUrl(previewPath).data.publicUrl;
+      const thumbnailUrl = client.storage.from("public-previews").getPublicUrl(thumbnailPath).data.publicUrl;
+
+      const { error: updateError } = await client
+        .from("photos")
+        .update({ preview_url: previewUrl, thumbnail_url: thumbnailUrl })
+        .eq("id", targetPhotoId);
+      if (updateError) throw updateError;
+
+      return respond({ success: true, photoId: targetPhotoId, previewUrl, thumbnailUrl });
+    }
+
     if (action === "list-removals") {
       const { data, error } = await client.rpc("admin_list_photo_removal_requests");
       if (error) throw error;

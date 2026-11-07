@@ -5,14 +5,19 @@ import Watermark from "@/components/gallery/Watermark";
 
 export default function PhotoCard({ photo, selected, onToggle, onOpen }) {
   return (
-    <div className="relative aspect-[3/4] overflow-hidden bg-neutral-100 select-none">
+    <div
+      className="relative aspect-[3/4] overflow-hidden bg-neutral-100 select-none"
+      onContextMenu={(e) => e.preventDefault()}
+    >
       <Image
         src={photo.thumbnail_url || photo.preview_url}
         alt={photo.filename || "Photo preview"}
         loading="lazy"
         decoding="async"
+        draggable={false}
+        onContextMenu={(e) => e.preventDefault()}
         sizes="(max-width: 768px) 33vw, 220px"
-        className={`absolute inset-0 h-full w-full scale-[1.04] ${
+        className={`absolute inset-0 h-full w-full scale-[1.04] pointer-events-none select-none ${
           photo.is_free ? "" : "blur-[2px]"
         }`}
       />
@@ -21,6 +26,7 @@ export default function PhotoCard({ photo, selected, onToggle, onOpen }) {
       <button
         type="button"
         onClick={onOpen}
+        onContextMenu={(e) => e.preventDefault()}
         aria-label="Open photo preview"
         className="absolute inset-0 z-20 cursor-zoom-in"
       />

@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
-import { Download, LogOut, LockKeyhole, QrCode, Trash2 } from 'lucide-react'
+import { Download, LogOut, LockKeyhole, QrCode, Trash2, Upload, RefreshCw } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { isSupabaseConfigured, supabase } from '@/supabaseClient'
 import { formatAthensDateTime, formatAthensHour, nightKey, parseTimestamp } from '@/lib/timeBuckets'
 import { formatMoney } from '@/lib/money'
+import { createWatermarkedPreviews, blobToBase64 } from '@/lib/watermarkImage'
 
 const SESSION_KEY = 'vaglan-gallery-admin-session'
 
@@ -66,6 +67,29 @@ export default function Admin() {
   const [busyAction, setBusyAction] = useState('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [uploadAlbum, setUploadAlbum] = useState('general')
+  const [uploadStatus, setUploadStatus] = useState('')
+  const [isUploading, setIsUploading] = useState(false)
+  const [reprocessStatus, setReprocessStatus] = useState('')
+  const [isReprocessing, setIsReprocessing] = useState(false)
+
+  const reloadData = async (token = sessionToken) => {
+    if (!token) return
+    try {
+      const [photoResult, removalResult, reportResult, salesResult] = await Promise.all([
+        invokeAdmin({ action: 'list-photos', sessionToken: token }),
+        invokeAdmin({ action: 'list-removals', sessionToken: token }),
+        invokeAdmin({ action: 'gallery-report', sessionToken: token }),
+        invokeAdmin({ action: 'sales-report', sessionToken: token }),
+      ])
+      setPhotos(photoResult.photos || [])
+      setRemovalRequests(removalResult.requests || [])
+      setNightReports(reportResult.nights || [])
+      setSales(salesResult.sales || [])
+    } catch (requestError) {
+      setError(requestError.message || 'Unable to reload data.')
+    }
+  }
 
   useEffect(() => {
     if (!sessionToken) return undefined
@@ -95,6 +119,93 @@ export default function Admin() {
       active = false
     }
   }, [sessionToken])
+
+  const handleUploadPhotos = async (event) => {
+    const fileList = event.target.files
+    if (!fileList || !fileList.length) return
+    const files = Array.from(fileList)
+    setIsUploading(true)
+    setError('')
+    setNotice('')
+    try {
+      let completed = 0
+      for (const file of files) {
+        setUploadStatus(
+          `Photo ${completed + 1} of ${files.length}: downscaling & baking watermark before upload...`,
+        )
+        const { previewBase64, thumbnailBase64 } = await createWatermarkedPreviews(file)
+        const originalBase64 = await blobToBase64(file)
+        const timestamp = file.lastModified || Date.now()
+
+        setUploadStatus(`Uploading photo ${completed + 1} of ${files.length} to Supabase...`)
+        await invokeAdmin({
+          action: 'ingest-photo',
+          sessionToken,
+          filename: file.name,
+          timestamp,
+          albumId: uploadAlbum || 'general',
+          originalBase64,
+          previewBase64,
+          thumbnailBase64,
+          originalMimeType: file.type || 'image/jpeg',
+        })
+        completed += 1
+      }
+      setNotice(`Successfully watermarked and uploaded ${files.length} photo(s).`)
+      setUploadStatus('')
+      event.target.value = ''
+      await reloadData()
+    } catch (err) {
+      setError(`Upload failed: ${err.message}`)
+    } finally {
+      setIsUploading(false)
+    }
+  }
+
+  const handleReprocessExisting = async () => {
+    const unwatermarked = photos.filter((p) => !p.thumbnail_url)
+    const targets = unwatermarked.length ? unwatermarked : photos
+    if (!targets.length) {
+      setNotice('No photos available to reprocess.')
+      return
+    }
+    const confirmed = window.confirm(
+      `This will process ${targets.length} photo(s): downloading previews, downscaling to 1280px WebP, physically burning in the watermark, and saving new thumbnails to Supabase. Continue?`,
+    )
+    if (!confirmed) return
+
+    setIsReprocessing(true)
+    setError('')
+    setNotice('')
+    try {
+      let completed = 0
+      for (const photo of targets) {
+        setReprocessStatus(
+          `Reprocessing photo ${completed + 1} of ${targets.length}: "${photo.filename || photo.id}"...`,
+        )
+        const { previewBase64, thumbnailBase64 } = await createWatermarkedPreviews(photo.preview_url)
+        await invokeAdmin({
+          action: 'update-photo-preview',
+          sessionToken,
+          photoId: photo.id,
+          filename: photo.filename,
+          timestamp: photo.timestamp,
+          previewBase64,
+          thumbnailBase64,
+        })
+        completed += 1
+      }
+      setNotice(
+        `Successfully reprocessed ${completed} photo(s). Previews now have physically burned-in watermarks and lower resolution WebP quality.`,
+      )
+      setReprocessStatus('')
+      await reloadData()
+    } catch (err) {
+      setError(`Reprocessing failed: ${err.message}`)
+    } finally {
+      setIsReprocessing(false)
+    }
+  }
 
   const runAdminAction = async (key, action, extra = {}) => {
     setBusyAction(key)
@@ -392,6 +503,74 @@ export default function Admin() {
                     <p className="mt-1 text-xs text-gray-500">Latest uploaded photo in {latestUploadReport.night_key} (Athens night)</p>
                   </>
                 ) : <p className="mt-3 text-sm text-gray-500">No timestamped photos are available.</p>}
+              </article>
+            </section>
+
+            <section className="mb-6 grid gap-4 md:grid-cols-2">
+              <article className="rounded-xl border border-gray-200 bg-white p-4">
+                <div className="flex items-center gap-2 text-sm font-bold">
+                  <Upload className="h-4 w-4 text-blue-600" /> Upload & Watermark Photos
+                </div>
+                <p className="mt-1 text-xs text-gray-500">
+                  Select camera photos. They will be downscaled (1280px WebP) and physically watermarked in your browser before uploading to Supabase.
+                </p>
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <label className="text-xs font-semibold text-gray-600">
+                    Album ID:
+                    <input
+                      type="text"
+                      value={uploadAlbum}
+                      onChange={(e) => setUploadAlbum(e.target.value.trim() || 'general')}
+                      placeholder="general"
+                      className="ml-2 w-28 rounded border border-gray-300 px-2 py-1 text-xs"
+                    />
+                  </label>
+                  <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg bg-blue-600 px-3 py-2 text-xs font-bold text-white hover:bg-blue-700 disabled:opacity-50">
+                    <Upload className="h-3.5 w-3.5" />
+                    {isUploading ? 'Processing…' : 'Choose photos'}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      disabled={isUploading}
+                      onChange={handleUploadPhotos}
+                      className="hidden"
+                    />
+                  </label>
+                </div>
+                {uploadStatus && (
+                  <p className="mt-2 text-xs font-medium text-blue-600 animate-pulse">
+                    {uploadStatus}
+                  </p>
+                )}
+              </article>
+
+              <article className="rounded-xl border border-gray-200 bg-white p-4">
+                <div className="flex items-center gap-2 text-sm font-bold">
+                  <RefreshCw className="h-4 w-4 text-emerald-600" /> Reprocess Existing Photos
+                </div>
+                <p className="mt-1 text-xs text-gray-500">
+                  Have unwatermarked photos already in the database? Click below to load them, bake the physical watermark into pixel data, downscale to WebP, and update Supabase.
+                </p>
+                <div className="mt-4 flex items-center gap-3">
+                  <button
+                    type="button"
+                    disabled={isReprocessing || !photos.length}
+                    onClick={handleReprocessExisting}
+                    className="inline-flex items-center gap-2 rounded-lg border border-gray-300 px-3 py-2 text-xs font-bold hover:bg-gray-50 disabled:opacity-50"
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${isReprocessing ? 'animate-spin' : ''}`} />
+                    {isReprocessing ? 'Reprocessing…' : 'Watermark existing photos'}
+                  </button>
+                  <span className="text-[11px] text-gray-400">
+                    {photos.filter((p) => !p.thumbnail_url).length} photo(s) missing thumbnails
+                  </span>
+                </div>
+                {reprocessStatus && (
+                  <p className="mt-2 text-xs font-medium text-blue-600 animate-pulse">
+                    {reprocessStatus}
+                  </p>
+                )}
               </article>
             </section>
 

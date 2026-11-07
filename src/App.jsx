@@ -859,6 +859,7 @@ function GalleryApp() {
                           type="button"
                           aria-label={`Preview ${photo.filename || 'photo'}`}
                           onClick={() => setActivePhoto(photo)}
+                          onContextMenu={(e) => e.preventDefault()}
                           className="absolute inset-0 z-0 h-full w-full cursor-zoom-in"
                         >
                           <img
@@ -866,7 +867,9 @@ function GalleryApp() {
                             alt={photo.filename || 'Photo'}
                             loading="lazy"
                             decoding="async"
-                            className={`h-full w-full object-cover ${
+                            draggable={false}
+                            onContextMenu={(e) => e.preventDefault()}
+                            className={`h-full w-full object-cover pointer-events-none select-none ${
                               photo.is_free ? '' : 'blur-[2px]'
                             }`}
                           />
