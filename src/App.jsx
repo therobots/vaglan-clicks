@@ -37,6 +37,7 @@ import {
   readAlbumFromSearch,
   validateAlbumId,
 } from '@/lib/album'
+import { mergePhotoPages } from '@/lib/mergePhotoPages'
 import {
   applyDocumentLanguage,
   galleryText,
@@ -137,6 +138,9 @@ function GalleryApp() {
   const [removalNotice, setRemovalNotice] = useState('')
   const pageRequestId = useRef(0)
   const photosRef = useRef(photos)
+  const galleryViewRef = useRef({ selectedAlbum, activeNight, activeSlot })
+  galleryViewRef.current = { selectedAlbum, activeNight, activeSlot }
+  const lastRealtimeMetadataRefreshRef = useRef(0)
   const loadMoreSentinelRef = useRef(null)
   const loadingMoreLockRef = useRef(false)
 
@@ -530,66 +534,136 @@ function GalleryApp() {
   useEffect(() => {
     if (!supabase) return undefined
     let active = true
+    let photoRefreshTimeout = null
+    let metadataRefreshTimeout = null
+    let photoRefreshPending = false
+
+    const mergeCurrentPage = async () => {
+      const { selectedAlbum: album, activeNight: night, activeSlot: slot } = galleryViewRef.current
+      if (!night) return
+      const { data, error } = await supabase.rpc('gallery_photos', {
+        album_id_input: album,
+        night_key_input: night,
+        slot_start_input: slot?.slot_start || null,
+        slot_end_input: slot?.slot_end || null,
+        before_timestamp_input: null,
+        before_photo_id_input: null,
+        limit_input: PAGE_SIZE,
+      })
+      if (!active) return
+      if (error) {
+        setLoadError(`Could not refresh live photos: ${error.message}`)
+        return
+      }
+      const rows = (data || []).map(normalizePhotoRow)
+      const currentWasEmpty = photosRef.current.length === 0
+      setPhotos((current) => mergePhotoPages(current, rows))
+      if (currentWasEmpty) {
+        const lastPhoto = rows[rows.length - 1]
+        setNextCursor(lastPhoto
+          ? { timestamp: lastPhoto.timestamp, id: lastPhoto.id }
+          : null)
+      }
+    }
+
+    const refreshNightAndSlots = async () => {
+      const { selectedAlbum: album, activeNight: currentNight, activeSlot: currentSlot } =
+        galleryViewRef.current
+      const { data: nightRows, error: nightsError } = await supabase.rpc(
+        'gallery_nights',
+        { album_id_input: album },
+      )
+      if (!active) return
+      if (nightsError) throw nightsError
+      const refreshedNights = nightRows || []
+      setNights(refreshedNights)
+      const nextNight = refreshedNights.some((night) => night.night_key === currentNight)
+        ? currentNight
+        : refreshedNights[0]?.night_key || ''
+      if (nextNight !== currentNight) {
+        setActiveNight(nextNight)
+        setActiveSlot(null)
+        setActivePhoto(null)
+      }
+      if (!nextNight) {
+        setSlots([])
+        return
+      }
+      const { data: slotRows, error: slotsError } = await supabase.rpc(
+        'gallery_slots',
+        { album_id_input: album, night_key_input: nextNight },
+      )
+      if (!active) return
+      if (slotsError) throw slotsError
+      const mappedSlots = mapGallerySlots(slotRows || [])
+      setSlots(mappedSlots)
+      if (
+        currentSlot &&
+        !mappedSlots.some((slot) =>
+          slot.slot_start === currentSlot.slot_start && slot.slot_end === currentSlot.slot_end,
+        )
+      ) {
+        setActiveSlot(null)
+      }
+    }
+
+    const queueMetadataRefresh = () => {
+      if (metadataRefreshTimeout !== null) return
+      const elapsed = Date.now() - lastRealtimeMetadataRefreshRef.current
+      metadataRefreshTimeout = window.setTimeout(() => {
+        metadataRefreshTimeout = null
+        if (!active) return
+        lastRealtimeMetadataRefreshRef.current = Date.now()
+        refreshNightAndSlots().catch((error) => {
+          if (active) setLoadError(`Could not refresh live gallery filters: ${error.message}`)
+        })
+      }, Math.max(0, 30000 - elapsed))
+    }
+
+    const queuePhotoRefresh = () => {
+      photoRefreshPending = true
+      if (photoRefreshTimeout !== null) window.clearTimeout(photoRefreshTimeout)
+      photoRefreshTimeout = window.setTimeout(() => {
+        photoRefreshTimeout = null
+        if (!active || !photoRefreshPending) return
+        photoRefreshPending = false
+        mergeCurrentPage().catch((error) => {
+          if (active) setLoadError(`Could not refresh live photos: ${error.message}`)
+        })
+      }, 1500)
+    }
+
     const channel = supabase
       .channel('public-photos-feed')
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'photos' },
-        async (payload) => {
+        (payload) => {
           if (!active) return
-          try {
-            if (payload.eventType === 'DELETE' && payload.old?.id) {
-              setSelectedIds((current) => current.filter((id) => id !== payload.old.id))
-              setActivePhoto((current) => (current?.id === payload.old.id ? null : current))
-            }
-            const [nightsResult, clockResult] = await Promise.all([
-              supabase.rpc('gallery_nights', { album_id_input: selectedAlbum }),
-              supabase.rpc('gallery_server_now'),
-            ])
-            if (!active) return
-            if (nightsResult.error) {
-              setLoadError(`Could not refresh gallery nights: ${nightsResult.error.message}`)
-              return
-            }
-            const refreshedNights = nightsResult.data || []
-            setNights(refreshedNights)
-            if (!refreshedNights.some((night) => night.night_key === activeNight)) {
-              setActiveSlot(null)
-              setActivePhoto(null)
-              setActiveNight(refreshedNights[0]?.night_key || '')
-            } else {
-              const { data: updatedSlots, error: slotsError } = await supabase.rpc(
-                'gallery_slots',
-                { album_id_input: selectedAlbum, night_key_input: activeNight },
-              )
-              if (slotsError) {
-                setLoadError(`Could not refresh time slots: ${slotsError.message}`)
-                return
-              }
-              const mappedSlots = mapGallerySlots(updatedSlots || [])
-              setSlots(mappedSlots)
-              const slotStillAvailable =
-                !activeSlot ||
-                mappedSlots.some(
-                  (slot) =>
-                    slot.slot_start === activeSlot.slot_start &&
-                    slot.slot_end === activeSlot.slot_end,
-                )
-              if (!slotStillAvailable) {
-                setActiveSlot(null)
-              } else {
-                await loadPhotoPage({ append: false, slot: activeSlot })
-              }
-            }
-            if (clockResult.error) {
-              setLoadError(`Could not refresh gallery server time: ${clockResult.error.message}`)
-              return
-            }
-            const serverNow = parseTimestamp(clockResult.data)
-            if (Number.isFinite(serverNow)) setServerOffsetMs(serverNow - Date.now())
-          } catch (error) {
-            if (active) setLoadError(`Could not refresh the live gallery: ${error.message}`)
+          /** @type {{ id?: string, album_id?: string }} */
+          const oldPhoto = payload.old || {}
+          /** @type {{ id?: string, album_id?: string }} */
+          const newPhoto = payload.new || {}
+          const { selectedAlbum: album } = galleryViewRef.current
+          const affectsAlbum = oldPhoto?.album_id === album || newPhoto?.album_id === album
+          if (!affectsAlbum) return
+
+          if (payload.eventType === 'DELETE') {
+            if (oldPhoto?.id) hidePhoto(oldPhoto.id)
+            queueMetadataRefresh()
+            return
           }
+
+          if (
+            payload.eventType === 'UPDATE' &&
+            oldPhoto?.album_id === album &&
+            newPhoto?.album_id !== album &&
+            oldPhoto?.id
+          ) {
+            hidePhoto(oldPhoto.id)
+          }
+          if (newPhoto?.album_id === album) queuePhotoRefresh()
+          if (payload.eventType === 'INSERT') queueMetadataRefresh()
         },
       )
       .subscribe((status) => {
@@ -597,9 +671,11 @@ function GalleryApp() {
       })
     return () => {
       active = false
-      supabase.removeChannel(channel)
+      if (photoRefreshTimeout !== null) window.clearTimeout(photoRefreshTimeout)
+      if (metadataRefreshTimeout !== null) window.clearTimeout(metadataRefreshTimeout)
+      void supabase.removeChannel(channel)
     }
-  }, [activeNight, loadPhotoPage, selectedAlbum])
+  }, [hidePhoto, selectedAlbum])
 
   const photoGroups = useMemo(() => groupPhotosByTime(photos), [photos])
   const selectedCount = selectedIds.length
