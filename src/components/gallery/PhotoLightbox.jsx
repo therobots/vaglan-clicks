@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Check, ChevronLeft, ChevronRight, Download, X } from "lucide-react";
-import Watermark from "@/components/gallery/Watermark";
 import { formatMoney } from "@/lib/money";
 import { galleryText, useGalleryLanguage } from "@/lib/galleryLanguage";
 
@@ -201,16 +200,19 @@ export default function PhotoLightbox({
                 transform: `translate3d(${zoom.x}px, ${zoom.y}px, 0) scale(${zoom.scale})`,
               }}
             >
-              <img
-                src={photo.preview_url}
-                alt={photo.filename || "Photo preview"}
-                loading="eager"
-                decoding="async"
-                draggable={false}
-                onContextMenu={(e) => e.preventDefault()}
-                className="max-h-full max-w-full object-contain pointer-events-none select-none"
-              />
-              {!isFree && !photo.thumbnail_url && <Watermark large />}
+              {photo.preview_url ? (
+                <img
+                  src={photo.preview_url}
+                  alt={photo.filename || "Photo preview"}
+                  loading="eager"
+                  decoding="async"
+                  draggable={false}
+                  onContextMenu={(e) => e.preventDefault()}
+                  className="max-h-full max-w-full object-contain pointer-events-none select-none"
+                />
+              ) : (
+                <div className="h-full w-full bg-neutral-100" role="img" aria-label="Photo preview unavailable" />
+              )}
             </div>
           </motion.div>
         </AnimatePresence>

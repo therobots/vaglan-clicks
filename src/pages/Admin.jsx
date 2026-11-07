@@ -1,10 +1,9 @@
 import { useEffect, useState } from 'react'
-import { Download, LogOut, LockKeyhole, QrCode, Trash2, Upload, RefreshCw } from 'lucide-react'
+import { Download, LogOut, LockKeyhole, QrCode, Trash2, Upload } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { isSupabaseConfigured, supabase } from '@/supabaseClient'
 import { formatAthensDateTime, formatAthensHour, nightKey, parseTimestamp } from '@/lib/timeBuckets'
 import { formatMoney } from '@/lib/money'
-import { createWatermarkedPreviews, blobToBase64 } from '@/lib/watermarkImage'
 
 const SESSION_KEY = 'vaglan-gallery-admin-session'
 
@@ -70,8 +69,6 @@ export default function Admin() {
   const [uploadAlbum, setUploadAlbum] = useState('general')
   const [uploadStatus, setUploadStatus] = useState('')
   const [isUploading, setIsUploading] = useState(false)
-  const [reprocessStatus, setReprocessStatus] = useState('')
-  const [isReprocessing, setIsReprocessing] = useState(false)
 
   const reloadData = async (token = sessionToken) => {
     if (!token) return
@@ -128,6 +125,7 @@ export default function Admin() {
     setError('')
     setNotice('')
     try {
+      const { createWatermarkedPreviews, blobToBase64 } = await import('@/lib/watermarkImage')
       let completed = 0
       for (const file of files) {
         setUploadStatus(
@@ -159,51 +157,6 @@ export default function Admin() {
       setError(`Upload failed: ${err.message}`)
     } finally {
       setIsUploading(false)
-    }
-  }
-
-  const handleReprocessExisting = async () => {
-    const unwatermarked = photos.filter((p) => !p.thumbnail_url)
-    const targets = unwatermarked.length ? unwatermarked : photos
-    if (!targets.length) {
-      setNotice('No photos available to reprocess.')
-      return
-    }
-    const confirmed = window.confirm(
-      `This will process ${targets.length} photo(s): downloading previews, downscaling to 1280px WebP, physically burning in the watermark, and saving new thumbnails to Supabase. Continue?`,
-    )
-    if (!confirmed) return
-
-    setIsReprocessing(true)
-    setError('')
-    setNotice('')
-    try {
-      let completed = 0
-      for (const photo of targets) {
-        setReprocessStatus(
-          `Reprocessing photo ${completed + 1} of ${targets.length}: "${photo.filename || photo.id}"...`,
-        )
-        const { previewBase64, thumbnailBase64 } = await createWatermarkedPreviews(photo.preview_url)
-        await invokeAdmin({
-          action: 'update-photo-preview',
-          sessionToken,
-          photoId: photo.id,
-          filename: photo.filename,
-          timestamp: photo.timestamp,
-          previewBase64,
-          thumbnailBase64,
-        })
-        completed += 1
-      }
-      setNotice(
-        `Successfully reprocessed ${completed} photo(s). Previews now have physically burned-in watermarks and lower resolution WebP quality.`,
-      )
-      setReprocessStatus('')
-      await reloadData()
-    } catch (err) {
-      setError(`Reprocessing failed: ${err.message}`)
-    } finally {
-      setIsReprocessing(false)
     }
   }
 
@@ -546,31 +499,10 @@ export default function Admin() {
               </article>
 
               <article className="rounded-xl border border-gray-200 bg-white p-4">
-                <div className="flex items-center gap-2 text-sm font-bold">
-                  <RefreshCw className="h-4 w-4 text-emerald-600" /> Reprocess Existing Photos
-                </div>
-                <p className="mt-1 text-xs text-gray-500">
-                  Have unwatermarked photos already in the database? Click below to load them, bake the physical watermark into pixel data, downscale to WebP, and update Supabase.
+                <h2 className="text-sm font-bold">Legacy previews</h2>
+                <p className="mt-2 text-xs text-gray-500">
+                  Rebuild legacy previews with tools/rebuild_previews.py.
                 </p>
-                <div className="mt-4 flex items-center gap-3">
-                  <button
-                    type="button"
-                    disabled={isReprocessing || !photos.length}
-                    onClick={handleReprocessExisting}
-                    className="inline-flex items-center gap-2 rounded-lg border border-gray-300 px-3 py-2 text-xs font-bold hover:bg-gray-50 disabled:opacity-50"
-                  >
-                    <RefreshCw className={`h-3.5 w-3.5 ${isReprocessing ? 'animate-spin' : ''}`} />
-                    {isReprocessing ? 'Reprocessing…' : 'Watermark existing photos'}
-                  </button>
-                  <span className="text-[11px] text-gray-400">
-                    {photos.filter((p) => !p.thumbnail_url).length} photo(s) missing thumbnails
-                  </span>
-                </div>
-                {reprocessStatus && (
-                  <p className="mt-2 text-xs font-medium text-blue-600 animate-pulse">
-                    {reprocessStatus}
-                  </p>
-                )}
               </article>
             </section>
 
@@ -637,15 +569,6 @@ export default function Admin() {
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-xs text-gray-500">{selectedPhotoIds.length} selected</span>
-                <button
-                  type="button"
-                  disabled={isReprocessing || !photos.length}
-                  onClick={handleReprocessExisting}
-                  className="inline-flex items-center gap-2 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-800 hover:bg-emerald-100 disabled:opacity-50"
-                >
-                  <RefreshCw className={`h-3.5 w-3.5 ${isReprocessing ? 'animate-spin' : ''}`} />
-                  {isReprocessing ? 'Reprocessing…' : 'Watermark existing photos'}
-                </button>
                 <button type="button" disabled={!selectedPhotoIds.length || Boolean(busyAction)} onClick={makeSelectedFree} className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-bold disabled:opacity-50">Make selected free</button>
                 <button type="button" disabled={!selectedPhotoIds.length || Boolean(busyAction)} onClick={deleteSelected} className="rounded-lg border border-red-200 bg-white px-3 py-2 text-xs font-bold text-red-700 disabled:opacity-50">Delete selected</button>
                 <button
@@ -668,14 +591,23 @@ export default function Admin() {
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
                 {filteredPhotos.map((photo) => (
                   <article key={photo.id} className="overflow-hidden rounded-xl border border-gray-200 bg-white">
-                    <img
-                      src={photo.thumbnail_url || photo.preview_url}
-                      alt={photo.filename || 'Gallery photo'}
-                      loading="lazy"
-                      decoding="async"
-                      className="aspect-square w-full object-cover"
-                    />
+                    {photo.watermark_baked && photo.thumbnail_url ? (
+                      <img
+                        src={photo.thumbnail_url}
+                        alt={photo.filename || 'Gallery photo'}
+                        loading="lazy"
+                        decoding="async"
+                        className="aspect-square w-full object-cover"
+                      />
+                    ) : (
+                      <div className="aspect-square bg-neutral-100" aria-label="Preview needs rebuild" />
+                    )}
                     <div className="p-3">
+                      {!photo.watermark_baked && (
+                        <span className="inline-block rounded bg-amber-100 px-2 py-1 text-[10px] font-bold text-amber-900">
+                          Needs rebuild
+                        </span>
+                      )}
                       <label className="mb-2 flex items-center gap-2 text-[11px] font-semibold">
                         <input type="checkbox" checked={selectedPhotoIds.includes(photo.id)} onChange={() => togglePhotoSelection(photo.id)} />
                         Select photo

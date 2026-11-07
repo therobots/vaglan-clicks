@@ -263,7 +263,7 @@ Deno.serve(async (request) => {
       while (true) {
         const { data, error } = await client
           .from("photos")
-          .select("id, preview_url, thumbnail_url, filename, timestamp, created_at, is_free, is_hidden, expires_at")
+          .select("id, preview_url, thumbnail_url, watermark_baked, filename, timestamp, created_at, is_free, is_hidden, expires_at")
           .order("timestamp", { ascending: false })
           .range(offset, offset + 999);
         if (error) throw error;
