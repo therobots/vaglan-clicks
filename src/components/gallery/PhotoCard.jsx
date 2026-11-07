@@ -1,27 +1,36 @@
-import React from "react";
+import React, { useState } from "react";
 import { Check } from "lucide-react";
-import { Image } from "@/components/ui/image";
 import Watermark from "@/components/gallery/Watermark";
 import { BLUR_LOCKED_PREVIEWS } from "@/lib/galleryDisplay";
 
 function PhotoCard({ photo, selected, onToggle, onOpen }) {
+  const [failedSource, setFailedSource] = useState(null);
+  const imageSource = photo.thumbnail_url || photo.preview_url;
+  const imageFailed = failedSource === imageSource;
+  const alt = photo.filename || "Photo preview";
+
   return (
     <div
       className="relative aspect-[3/4] overflow-hidden bg-neutral-100 select-none"
       onContextMenu={(e) => e.preventDefault()}
     >
-      <Image
-        src={photo.thumbnail_url || photo.preview_url}
-        alt={photo.filename || "Photo preview"}
-        loading="lazy"
-        decoding="async"
-        draggable={false}
-        onContextMenu={(e) => e.preventDefault()}
-        sizes="(max-width: 768px) 33vw, 220px"
-        className={`absolute inset-0 h-full w-full pointer-events-none select-none ${
-          !photo.is_free && BLUR_LOCKED_PREVIEWS ? "scale-[1.04] blur-[2px]" : ""
-        }`}
-      />
+      {imageFailed ? (
+        <div className="absolute inset-0 bg-neutral-100" role="img" aria-label={alt} />
+      ) : (
+        <img
+          src={imageSource}
+          alt={alt}
+          loading="lazy"
+          decoding="async"
+          draggable={false}
+          onContextMenu={(event) => event.preventDefault()}
+          onError={() => setFailedSource(imageSource)}
+          sizes="(max-width: 768px) 33vw, 220px"
+          className={`absolute inset-0 h-full w-full object-cover pointer-events-none select-none ${
+            !photo.is_free && BLUR_LOCKED_PREVIEWS ? "scale-[1.04] blur-[2px]" : ""
+          }`}
+        />
+      )}
       {!photo.is_free && !photo.thumbnail_url && <Watermark />}
 
       <button
