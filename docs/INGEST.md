@@ -15,6 +15,13 @@ python bridge\camera_bridge.py
 
 The bridge requires the active Supabase migrations, including `20261021170000_watermarked_photo_delivery.sql`, before it can register photos. The service-role key is privileged: keep it only in the trusted local process environment, never in frontend variables, source control, or browser code.
 
+## Album QR sessions
+
+- The camera bridge supports QR-driven album sessions. Scan a valid gallery card that points to `https://your-gallery.example/?album=042`; the bridge accepts only URLs from the configured `GALLERY_BASE_URL` host and path and rejects missing, duplicate, malformed, or malicious `album` parameters.
+- The bridge keeps a current session album in memory and uploads subsequent photos to that album until another trusted QR card is scanned. The active album is stored in the `photos.album_id` column; legacy rows default to `general`.
+- Building a QR card is simple: generate a URL like `https://your-gallery.example/?album=042`, then print it with the helper in [`tools/qr_cards/generate_album_cards.py`](../tools/qr_cards/generate_album_cards.py). The script renders A4 sheets with QR labels that can be printed and handed to the camera operator.
+- The bridge ignores ambiguous QR cards (`__conflict__` when multiple albums are detected) and waits for a trusted single-album scan before changing the active album. A fallback `CAMERA_DEFAULT_ALBUM` remains optional but should be treated as a safe default only for a single known collection.
+
 ## Capture timestamps
 
 - Store `photos.timestamp` as a UTC Unix timestamp in milliseconds. Do not store the uploader machine's local wall-clock time or a timezone-free camera string.

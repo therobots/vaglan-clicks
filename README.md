@@ -12,9 +12,10 @@ A live photo gallery built with React, Vite, and Supabase.
    VITE_SUPABASE_URL=https://your-project-id.supabase.co
    VITE_SUPABASE_ANON_KEY=your-supabase-anon-key
    VITE_INSTAGRAM_HANDLE=vaglan_clicks
+   GALLERY_BASE_URL=https://your-project-id.supabase.co?album=general
    ```
 
-   Use the project URL and **anon/public** key from the Supabase dashboard. Never put a service-role key in frontend configuration.
+   Use the project URL and **anon/public** key from the Supabase dashboard. Never put a service-role key in frontend configuration. The gallery URL can include a single `album` query parameter; the bridge validates it strictly and only accepts QR codes whose host/path matches the configured gallery base URL.
 
 4. Back up the existing Supabase database, then follow [`docs/SETUP.md`](./docs/SETUP.md) to review/apply active migrations in timestamp order. Do not apply the archived `20261019210000_gallery_security.sql` in [`sql-archive/`](./sql-archive/); it assumes a different `photos` schema. The active migrations preserve existing photo rows, harden public access, add server-priced order/payment records, Athens-night navigation, per-night expiry, private photo-removal request handling, and watermarked preview storage.
 5. Run `npm run dev` and open the local URL printed by Vite.
@@ -25,7 +26,9 @@ Without valid Supabase settings, the app displays a configuration message rather
 
 The camera bridge uploads originals to the private `private-originals` bucket and physically watermarked WebP previews (1280px max dimension, quality 75) plus 300px WebP thumbnails to the public `public-previews` bucket. The gallery grid loads thumbnails; the full preview is loaded when a photo is opened. Visitors can browse by Athens-local night and available capture-time slots, select photos for €2.00 for the first photo and €0.50 for each additional photo in Viva Wallet checkout, optionally add a €0/€1/€2/€3 tip, and preview them in a full-screen lightbox. Photos expire per night; the hourly purge remains in dry-run mode until an operator explicitly enables it as described in [`docs/SETUP.md`](./docs/SETUP.md).
 
-See [`docs/INGEST.md`](./docs/INGEST.md) for camera-bridge configuration and corrected UTC timestamps.
+See [`docs/INGEST.md`](./docs/INGEST.md) for camera-bridge configuration, album QR scans, and corrected UTC timestamps.
+
+Album sessions use the public gallery query parameter `?album=042`; the value must match the pattern `^[A-Za-z0-9_-]{1,64}$` and preserve leading zeroes. The app reads the selected album from the URL, keeps cart selections per album, and filters every public gallery query to `photos.album_id` so a QR card cannot widen access to another album.
 
 ## Admin and free-photo setup
 

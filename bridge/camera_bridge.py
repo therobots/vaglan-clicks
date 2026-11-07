@@ -1,5 +1,5 @@
-#!/usr/bin/env python3
-"""Watch a camera folder and securely upload originals plus watermarked previews."""
+﻿#!/usr/bin/env python3
+"""Watch a camera folder, process QR album markers, and upload ordinary photos to the active album."""
 
 from __future__ import annotations
 
@@ -7,20 +7,26 @@ import hashlib
 import logging
 import mimetypes
 import os
+import queue
 import re
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from PIL import ExifTags, Image, ImageOps
+from pyzbar.pyzbar import decode
 from supabase import Client, create_client
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
 
 PREVIEW_BUCKET = "public-previews"
 ORIGINALS_BUCKET = "private-originals"
 PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
 PHOTO_NAMESPACE = uuid.UUID("08650d10-527c-4c78-bec7-572573cd1d83")
+ALBUM_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 LOG = logging.getLogger("camera_bridge")
 
 
@@ -31,8 +37,75 @@ def required_env(name: str) -> str:
     return value
 
 
+def validate_album_id(value: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError("Album ID must be a string.")
+    album_id = value.strip()
+    if not album_id or not ALBUM_ID_PATTERN.fullmatch(album_id):
+        raise ValueError("Invalid album ID. Use letters, numbers, hyphens, or underscores only.")
+    return album_id
+
+
+def parse_album_url(raw_url: str, gallery_base_url: str | None = None) -> str | None:
+    if not isinstance(raw_url, str):
+        return None
+    candidate = raw_url.strip()
+    if not candidate:
+        return None
+    try:
+        parsed = urlparse(candidate)
+    except Exception:
+        return None
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    if gallery_base_url:
+        try:
+            trusted = urlparse(gallery_base_url.strip())
+        except Exception:
+            return None
+        if trusted.scheme not in {"http", "https"} or not trusted.netloc:
+            return None
+        if parsed.netloc != trusted.netloc:
+            return None
+        if trusted.path and parsed.path not in {trusted.path, trusted.path.rstrip("/") + "/"}:
+            if not parsed.path.startswith(trusted.path.rstrip("/") + "/"):
+                return None
+    album_values = parse_qs(parsed.query, keep_blank_values=True).get("album", [])
+    if len(album_values) != 1:
+        return None
+    try:
+        return validate_album_id(album_values[0])
+    except ValueError:
+        return None
+
+
+def detect_album_qr(path: Path, gallery_base_url: str | None = None) -> str | None:
+    try:
+        with Image.open(path) as image:
+            decoded = decode(image)
+    except Exception:
+        return None
+    matches = set()
+    for item in decoded:
+        if not item.data:
+            continue
+        try:
+            payload = item.data.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        album = parse_album_url(payload, gallery_base_url)
+        if album:
+            matches.add(album)
+    if len(matches) == 1:
+        return next(iter(matches))
+    if len(matches) > 1:
+        LOG.warning("Conflicting album QR codes detected in %s; album session unchanged.", path)
+        return "__conflict__"
+    return None
+
+
 def safe_filename(filename: str) -> str:
-    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", Path(filename).stem).strip(".-_")
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", Path(filename).stem).strip("._-")
     return (stem or "photo")[:100]
 
 
@@ -94,8 +167,14 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def upload_photo(client: Client, source: Path, watermark_path: Path, camera_timezone: ZoneInfo,
-                 offset_seconds: float) -> bool:
+def upload_photo(
+    client: Client,
+    source: Path,
+    watermark_path: Path,
+    camera_timezone: ZoneInfo,
+    offset_seconds: float,
+    album_id: str,
+) -> bool:
     digest = file_sha256(source)
     photo_id = str(uuid.uuid5(PHOTO_NAMESPACE, digest))
     timestamp_ms: int
@@ -111,12 +190,21 @@ def upload_photo(client: Client, source: Path, watermark_path: Path, camera_time
 
     existing = (
         client.table("photos")
-        .select("id")
+        .select("id, album_id")
         .eq("id", photo_id)
         .maybe_single()
         .execute()
     )
     if existing.data:
+        current_album = existing.data.get("album_id") or "general"
+        if current_album != album_id:
+            LOG.warning(
+                "Duplicate image %s already registered under album %s instead of %s; skipping upload.",
+                source.name,
+                current_album,
+                album_id,
+            )
+            return False
         LOG.info("Skipping previously uploaded file %s.", source.name)
         return False
 
@@ -172,10 +260,11 @@ def upload_photo(client: Client, source: Path, watermark_path: Path, camera_time
                 "timestamp_input": timestamp_ms,
                 "original_path_input": original_path,
                 "original_bucket_input": ORIGINALS_BUCKET,
+                "album_id_input": album_id,
             },
         ).execute()
         row_created = True
-        LOG.info("Uploaded %s as photo %s.", source.name, photo_id)
+        LOG.info("Uploaded %s as photo %s in album %s.", source.name, photo_id, album_id)
         return True
     except Exception:
         if row_created:
@@ -224,12 +313,87 @@ def wait_until_stable(path: Path, stable_checks: int = 3, interval_seconds: floa
     return False
 
 
+class CameraEventHandler(FileSystemEventHandler):
+    def __init__(self, watch_dir: Path, queue_ref: "queue.Queue[str]", seen: set[str]):
+        self.watch_dir = watch_dir
+        self.queue_ref = queue_ref
+        self.seen = seen
+
+    def _enqueue(self, path: str) -> None:
+        normalized = str(Path(path).resolve())
+        if normalized in self.seen:
+            return
+        self.seen.add(normalized)
+        self.queue_ref.put(normalized)
+
+    def on_created(self, event) -> None:
+        if event.is_directory:
+            return
+        self._enqueue(event.src_path)
+
+    def on_modified(self, event) -> None:
+        if event.is_directory:
+            return
+        self._enqueue(event.src_path)
+
+
+def process_pending_files(
+    watch_dir: Path,
+    queue_ref: "queue.Queue[str]",
+    client: Client,
+    watermark_path: Path,
+    camera_timezone: ZoneInfo,
+    offset_seconds: float,
+    gallery_base_url: str | None,
+    default_album: str | None,
+    active_album: dict,
+) -> None:
+    while not queue_ref.empty():
+        file_path = Path(queue_ref.get())
+        try:
+            if not file_path.exists() or not file_path.is_file():
+                continue
+            if file_path.suffix.lower() not in PHOTO_EXTENSIONS:
+                continue
+            if file_path.resolve() == watermark_path:
+                continue
+            if not wait_until_stable(file_path):
+                continue
+            album_marker = detect_album_qr(file_path, gallery_base_url)
+            if album_marker == "__conflict__":
+                LOG.warning("Skipping ambiguous album QR card %s without changing the active album.", file_path)
+                continue
+            if album_marker:
+                previous = active_album.get("value")
+                active_album["value"] = album_marker
+                LOG.info("Album session changed from %s to %s after QR scan %s.", previous, album_marker, file_path.name)
+                continue
+
+            if not active_album.get("value") and not default_album:
+                LOG.info("Skipping %s until an album is established. Set CAMERA_DEFAULT_ALBUM to enable a fallback.", file_path.name)
+                continue
+            album_name = active_album.get("value") or default_album or "general"
+            try:
+                album_name = validate_album_id(album_name)
+            except ValueError:
+                LOG.warning("Default album %r is invalid; falling back to general.", album_name)
+                album_name = "general"
+            active_album["value"] = album_name
+            upload_photo(client, file_path, watermark_path, camera_timezone, offset_seconds, album_name)
+        except Exception:
+            LOG.exception("Could not process %s; it will be retried.", file_path.name)
+        finally:
+            queue_ref.task_done()
+
+
 def main() -> None:
     logging.basicConfig(
         level=os.environ.get("LOG_LEVEL", "INFO").upper(),
         format="%(asctime)s %(levelname)s %(message)s",
     )
     watch_dir = Path(required_env("CAMERA_WATCH_DIR")).expanduser().resolve()
+    gallery_base_url = os.environ.get("GALLERY_BASE_URL", "").strip() or None
+    default_album = os.environ.get("CAMERA_DEFAULT_ALBUM", "").strip() or None
     watermark_value = os.environ.get("WATERMARK_IMAGE")
     watermark_path = (
         Path(watermark_value).expanduser().resolve()
@@ -250,22 +414,49 @@ def main() -> None:
     except ValueError as error:
         raise RuntimeError("CAMERA_CLOCK_OFFSET_SECONDS must be numeric.") from error
 
+    if gallery_base_url:
+        LOG.info("Accepted gallery base URL: %s", gallery_base_url)
+    else:
+        LOG.warning("GALLERY_BASE_URL is not configured; QR album switching will be disabled until it is set.")
+
+    if default_album:
+        LOG.info("Default album fallback is enabled for the bridge: %s", default_album)
+    else:
+        LOG.info("No default album fallback is configured; the bridge waits for a valid QR album before uploading photos.")
+
     client = create_client(required_env("SUPABASE_URL"), required_env("SUPABASE_SERVICE_ROLE_KEY"))
+    active_album = {"value": None}
+    queue_ref: "queue.Queue[str]" = queue.Queue()
+    seen: set[str] = set()
+
+    for photo_path in sorted(watch_dir.iterdir()):
+        if photo_path.is_file() and photo_path.suffix.lower() in PHOTO_EXTENSIONS:
+            queue_ref.put(str(photo_path.resolve()))
+            seen.add(str(photo_path.resolve()))
+
+    handler = CameraEventHandler(watch_dir, queue_ref, seen)
+    observer = Observer()
+    observer.schedule(handler, str(watch_dir), recursive=False)
+    observer.start()
     LOG.info("Watching %s for new camera images.", watch_dir)
-    while True:
-        for photo_path in sorted(watch_dir.iterdir()):
-            if not photo_path.is_file() or photo_path.suffix.lower() not in PHOTO_EXTENSIONS:
-                continue
-            if photo_path.resolve() == watermark_path:
-                continue
-            if not wait_until_stable(photo_path):
-                continue
-            try:
-                upload_photo(client, photo_path, watermark_path, camera_timezone, offset_seconds)
-            except Exception:
-                LOG.exception("Could not upload %s; it will be retried.", photo_path.name)
-                time.sleep(5)
-        time.sleep(1)
+
+    try:
+        while True:
+            process_pending_files(
+                watch_dir,
+                queue_ref,
+                client,
+                watermark_path,
+                camera_timezone,
+                offset_seconds,
+                gallery_base_url,
+                default_album,
+                active_album,
+            )
+            time.sleep(1)
+    finally:
+        observer.stop()
+        observer.join()
 
 
 if __name__ == "__main__":

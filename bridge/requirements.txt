@@ -1,2 +1,4 @@
 Pillow>=10.4,<13
 supabase>=2.11,<3
+pyzbar>=0.1.9
+watchdog>=4.0.0

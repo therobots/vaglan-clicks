@@ -32,6 +32,12 @@ import {
   parseTimestamp,
 } from '@/lib/timeBuckets'
 import {
+  DEFAULT_ALBUM_ID,
+  normalizeAlbumId,
+  readAlbumFromSearch,
+  validateAlbumId,
+} from '@/lib/album'
+import {
   applyDocumentLanguage,
   galleryText,
   useGalleryLanguage,
@@ -85,6 +91,11 @@ const groupPhotosByTime = (items) => {
 function GalleryApp() {
   const language = useGalleryLanguage()
   const text = galleryText[language]
+  const [selectedAlbum, setSelectedAlbum] = useState(() => {
+    const album = readAlbumFromSearch(window.location.search || '', DEFAULT_ALBUM_ID)
+    return validateAlbumId(album)
+  })
+  const cartKey = `${CART_ID}:${selectedAlbum}`
   const [photos, setPhotos] = useState([])
   const [nights, setNights] = useState([])
   const [activeNight, setActiveNight] = useState('')
@@ -93,8 +104,8 @@ function GalleryApp() {
   const [nextCursor, setNextCursor] = useState(null)
   const [hasMore, setHasMore] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
-  const [selectedIds, setSelectedIds] = useState(() => readCartSelection(CART_ID))
-  const [tipCents, setTipCents] = useState(() => readCartTip(CART_ID))
+  const [selectedIds, setSelectedIds] = useState(() => readCartSelection(cartKey))
+  const [tipCents, setTipCents] = useState(() => readCartTip(cartKey))
   const [activePhoto, setActivePhoto] = useState(null)
   const [firstPhotoCents, setFirstPhotoCents] = useState(DEFAULT_FIRST_PRICE * 100)
   const [extraPhotoCents, setExtraPhotoCents] = useState(EXTRA_PHOTO_PRICE * 100)
@@ -129,6 +140,16 @@ function GalleryApp() {
   const loadMoreSentinelRef = useRef(null)
   const loadingMoreLockRef = useRef(false)
 
+  const setAlbumSelection = useCallback((nextValue) => {
+    const safeAlbum = normalizeAlbumId(nextValue, DEFAULT_ALBUM_ID)
+    setSelectedAlbum(safeAlbum)
+    if (typeof window !== 'undefined') {
+      const nextUrl = new URL(window.location.href)
+      nextUrl.searchParams.set('album', safeAlbum)
+      window.history.replaceState({}, '', nextUrl)
+    }
+  }, [])
+
   useEffect(() => {
     photosRef.current = photos
   }, [photos])
@@ -138,8 +159,8 @@ function GalleryApp() {
   }, [language])
 
   useEffect(() => {
-    cacheCartSelection(CART_ID, selectedIds, tipCents)
-  }, [selectedIds, tipCents])
+    cacheCartSelection(cartKey, selectedIds, tipCents)
+  }, [cartKey, selectedIds, tipCents])
 
   useEffect(() => {
     if (!activePhoto) return undefined
@@ -154,6 +175,22 @@ function GalleryApp() {
       window.removeEventListener('keydown', handleKeyDown)
     }
   }, [activePhoto])
+
+  useEffect(() => {
+    setSelectedIds(readCartSelection(cartKey))
+    setTipCents(readCartTip(cartKey))
+    setPhotos([])
+    setNights([])
+    setSlots([])
+    setActiveNight('')
+    setActiveSlot(null)
+    setNextCursor(null)
+    setHasMore(false)
+    setLoading(true)
+    setLoadingMore(false)
+    setLoadError('')
+    setLoadingMoreError('')
+  }, [cartKey])
 
   const loadPhotoPage = useCallback(
     async ({
@@ -189,6 +226,7 @@ function GalleryApp() {
       let result
       try {
         result = await supabase.rpc('gallery_photos', {
+          album_id_input: selectedAlbum,
           night_key_input: night,
           slot_start_input: slot?.slot_start || null,
           slot_end_input: slot?.slot_end || null,
@@ -209,30 +247,6 @@ function GalleryApp() {
       const { data, error } = result
       if (requestId !== pageRequestId.current) return
       if (error) {
-        if (/column.*is_free|is_free.*does not exist/i.test(String(error.message || ''))) {
-          try {
-            const fallbackResult = await supabase
-              .from('photos')
-              .select('*')
-              .order('timestamp', { ascending: false })
-              .limit(PAGE_SIZE)
-            const fallbackRows = (fallbackResult.data || []).map(normalizePhotoRow)
-            setPhotos((current) => (append ? [...current, ...fallbackRows] : fallbackRows))
-            setLoadError('')
-            setConnectionStatus('connecting')
-            setLoading(false)
-            setLoadingMore(false)
-            setHasMore(fallbackRows.length === PAGE_SIZE)
-            setNextCursor(
-              fallbackRows.length > 0
-                ? { timestamp: fallbackRows[fallbackRows.length - 1].timestamp, id: fallbackRows[fallbackRows.length - 1].id }
-                : null,
-            )
-            return
-          } catch {
-            // Fall through to the standard error message below.
-          }
-        }
         const message = `Could not load photos: ${error.message || 'Unknown error'}`
         if (append) setLoadingMoreError(message)
         else setLoadError(message)
@@ -261,7 +275,7 @@ function GalleryApp() {
       setLoading(false)
       setLoadingMore(false)
     },
-    [activeNight, activeSlot],
+    [activeNight, activeSlot, selectedAlbum],
   )
 
   const loadNextPhotoPage = useCallback(async () => {
@@ -307,7 +321,7 @@ function GalleryApp() {
 
     const loadGallery = async () => {
       const [nightsResult, clockResult, pricingResult] = await Promise.all([
-        supabase.rpc('gallery_nights'),
+        supabase.rpc('gallery_nights', { album_id_input: selectedAlbum }),
         supabase.rpc('gallery_server_now'),
         supabase
           .from('gallery_state')
@@ -383,7 +397,7 @@ function GalleryApp() {
     return () => {
       active = false
     }
-  }, [])
+  }, [selectedAlbum])
 
   const hidePhoto = useCallback((photoId) => {
     setPhotos((current) => current.filter((photo) => photo.id !== photoId))
@@ -413,7 +427,11 @@ function GalleryApp() {
     const reconcileVisibility = async () => {
       const ids = photosRef.current.map((photo) => photo.id).filter(Boolean)
       if (!ids.length) return
-      const { data, error } = await supabase.from('photos').select('id').in('id', ids)
+      const { data, error } = await supabase
+        .from('photos')
+        .select('id')
+        .in('id', ids)
+        .eq('album_id', selectedAlbum)
       if (!active) return
       if (error) {
         setLoadError(`Could not refresh photo visibility: ${error.message}`)
@@ -433,14 +451,14 @@ function GalleryApp() {
       active = false
       window.clearInterval(interval)
     }
-  }, [hidePhoto])
+  }, [hidePhoto, selectedAlbum])
 
   useEffect(() => {
     if (!supabase) return undefined
     let active = true
     const refreshNightAvailability = async () => {
       const [nightsResult, clockResult] = await Promise.all([
-        supabase.rpc('gallery_nights'),
+        supabase.rpc('gallery_nights', { album_id_input: selectedAlbum }),
         supabase.rpc('gallery_server_now'),
       ])
       if (!active) return
@@ -475,7 +493,7 @@ function GalleryApp() {
       active = false
       window.clearInterval(interval)
     }
-  }, [activeNight])
+  }, [activeNight, selectedAlbum])
 
   useEffect(() => {
     if (!activeNight || !supabase) {
@@ -486,6 +504,7 @@ function GalleryApp() {
     const loadSlots = async () => {
       try {
         const { data, error } = await supabase.rpc('gallery_slots', {
+          album_id_input: selectedAlbum,
           night_key_input: activeNight,
         })
         if (!active) return
@@ -502,7 +521,7 @@ function GalleryApp() {
     return () => {
       active = false
     }
-  }, [activeNight])
+  }, [activeNight, selectedAlbum])
 
   useEffect(() => {
     loadPhotoPage()
@@ -524,7 +543,7 @@ function GalleryApp() {
               setActivePhoto((current) => (current?.id === payload.old.id ? null : current))
             }
             const [nightsResult, clockResult] = await Promise.all([
-              supabase.rpc('gallery_nights'),
+              supabase.rpc('gallery_nights', { album_id_input: selectedAlbum }),
               supabase.rpc('gallery_server_now'),
             ])
             if (!active) return
@@ -541,7 +560,7 @@ function GalleryApp() {
             } else {
               const { data: updatedSlots, error: slotsError } = await supabase.rpc(
                 'gallery_slots',
-                { night_key_input: activeNight },
+                { album_id_input: selectedAlbum, night_key_input: activeNight },
               )
               if (slotsError) {
                 setLoadError(`Could not refresh time slots: ${slotsError.message}`)
@@ -580,7 +599,7 @@ function GalleryApp() {
       active = false
       supabase.removeChannel(channel)
     }
-  }, [activeNight, loadPhotoPage])
+  }, [activeNight, loadPhotoPage, selectedAlbum])
 
   const photoGroups = useMemo(() => groupPhotosByTime(photos), [photos])
   const selectedCount = selectedIds.length
@@ -730,6 +749,15 @@ function GalleryApp() {
             {schemaNotice}
           </p>
         )}
+        <div className="flex items-center justify-between border-b border-gray-100 px-3 py-2 text-[11px] uppercase tracking-[0.12em] text-neutral-500">
+          <span>Album</span>
+          <input
+            aria-label="Album ID"
+            value={selectedAlbum}
+            onChange={(event) => setAlbumSelection(event.target.value)}
+            className="w-28 rounded-full border border-neutral-200 bg-neutral-50 px-2 py-1 text-right font-semibold text-neutral-700 outline-none ring-0 focus:border-neutral-400"
+          />
+        </div>
         {nights.length > 1 && (
           <nav
             aria-label="Choose gallery night"
