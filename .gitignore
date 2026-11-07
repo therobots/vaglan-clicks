@@ -43,3 +43,7 @@ base44/.app.jsonc
 .vs/
 supabase/.temp/
 export-report.json
+
+# Python bytecode
+__pycache__/
+*.pyc
