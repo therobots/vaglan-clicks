@@ -1,4 +1,10 @@
 import watermarkPng from '@/assets/watermark.png'
+import {
+  PREVIEW_MAX_DIMENSION,
+  PREVIEW_QUALITY,
+  THUMB_MAX_DIMENSION,
+  THUMB_QUALITY,
+} from '@/lib/previewSettings'
 
 let cachedWatermarkImage = null
 
@@ -92,7 +98,7 @@ export const blobToBase64 = (blob) =>
 /**
  * Takes an input image (File, Blob, or image URL), resizes it so its maximum
  * dimension does not exceed maxDimension, physically composites the watermark
- * onto the center, and generates both a 1280px max preview and a 300px max thumbnail.
+ * onto the center, and generates a configured preview and thumbnail.
  *
  * @param {File|Blob|string} source
  * @returns {Promise<{
@@ -107,8 +113,8 @@ export const blobToBase64 = (blob) =>
 export async function createWatermarkedPreviews(source) {
   const [img, watermark] = await Promise.all([loadImage(source), getWatermarkImage()])
 
-  // 1. Calculate dimensions for preview (max 1280px)
-  const maxPreviewDim = 1280
+  // 1. Calculate dimensions for the configured preview size
+  const maxPreviewDim = PREVIEW_MAX_DIMENSION
   let previewWidth = img.naturalWidth || img.width
   let previewHeight = img.naturalHeight || img.height
 
@@ -144,13 +150,12 @@ export async function createWatermarkedPreviews(source) {
     const posY = Math.round((previewHeight - wmHeight) / 2)
 
     previewCtx.save()
-    previewCtx.globalAlpha = 0.55
     previewCtx.drawImage(watermark, posX, posY, wmWidth, wmHeight)
     previewCtx.restore()
   }
 
-  // 2. Generate 300px thumbnail from the already-watermarked preview canvas
-  const maxThumbDim = 300
+  // 2. Generate a thumbnail from the already-watermarked preview canvas
+  const maxThumbDim = THUMB_MAX_DIMENSION
   let thumbWidth = previewWidth
   let thumbHeight = previewHeight
 
@@ -174,8 +179,8 @@ export async function createWatermarkedPreviews(source) {
 
   // Export blobs and base64 strings
   const [previewBlob, thumbnailBlob] = await Promise.all([
-    canvasToBlob(previewCanvas, 'image/webp', 0.75),
-    canvasToBlob(thumbCanvas, 'image/webp', 0.75),
+    canvasToBlob(previewCanvas, 'image/webp', PREVIEW_QUALITY / 100),
+    canvasToBlob(thumbCanvas, 'image/webp', THUMB_QUALITY / 100),
   ])
 
   const [previewBase64, thumbnailBase64] = await Promise.all([

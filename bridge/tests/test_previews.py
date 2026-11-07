@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from PIL import Image
+from PIL import Image, ImageChops
 from bridge.camera_bridge import prepare_previews
 
 
@@ -27,9 +27,9 @@ class TestPreparePreviews(unittest.TestCase):
 
         with Image.open(preview) as p:
             self.assertEqual(p.format, "WEBP")
-            self.assertEqual(p.width, 1280)
-            self.assertEqual(p.height, 720)
-            self.assertLessEqual(max(p.width, p.height), 1280)
+            self.assertEqual(p.width, 1080)
+            self.assertEqual(p.height, 608)
+            self.assertLessEqual(max(p.width, p.height), 1080)
 
         with Image.open(thumb) as t:
             self.assertEqual(t.format, "WEBP")
@@ -46,15 +46,29 @@ class TestPreparePreviews(unittest.TestCase):
 
         with Image.open(preview) as p:
             self.assertEqual(p.format, "WEBP")
-            self.assertEqual(p.height, 1280)
-            self.assertEqual(p.width, 640)
-            self.assertLessEqual(max(p.width, p.height), 1280)
+            self.assertEqual(p.height, 1080)
+            self.assertEqual(p.width, 540)
+            self.assertLessEqual(max(p.width, p.height), 1080)
 
         with Image.open(thumb) as t:
             self.assertEqual(t.format, "WEBP")
             self.assertEqual(t.height, 300)
             self.assertEqual(t.width, 150)
             self.assertLessEqual(max(t.width, t.height), 300)
+
+    def test_watermark_changes_pixels_in_the_preview(self):
+        source = self.dir_path / "plain.jpg"
+        Image.new("RGB", (800, 600), (100, 150, 200)).save(source, format="JPEG")
+        preview = self.dir_path / "watermarked.webp"
+        thumb = self.dir_path / "watermarked_thumb.webp"
+
+        prepare_previews(source, self.watermark_path, preview, thumb)
+
+        with Image.open(preview) as result, Image.open(source) as original:
+            baseline = original.resize(result.size, Image.Resampling.LANCZOS).convert("RGB")
+            center_box = (result.width // 2 - 20, result.height // 2 - 20,
+                          result.width // 2 + 20, result.height // 2 + 20)
+            self.assertIsNotNone(ImageChops.difference(result.convert("RGB"), baseline).crop(center_box).getbbox())
 
 
 if __name__ == "__main__":

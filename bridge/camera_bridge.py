@@ -29,6 +29,26 @@ ALBUM_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 LOG = logging.getLogger("camera_bridge")
 
 
+def _read_image_setting(name: str, default: int, minimum: int, maximum: int | None = None) -> int:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise ValueError(f"{name} must be an integer.") from error
+    if parsed < minimum or (maximum is not None and parsed > maximum):
+        bounds = f"between {minimum} and {maximum}" if maximum is not None else f"at least {minimum}"
+        raise ValueError(f"{name} must be {bounds}.")
+    return parsed
+
+
+PREVIEW_MAX_DIMENSION = _read_image_setting("VAGLAN_PREVIEW_MAX_DIMENSION", 1080, 1)
+PREVIEW_QUALITY = _read_image_setting("VAGLAN_PREVIEW_QUALITY", 60, 1, 100)
+THUMB_MAX_DIMENSION = _read_image_setting("VAGLAN_THUMB_MAX_DIMENSION", 300, 1)
+THUMB_QUALITY = _read_image_setting("VAGLAN_THUMB_QUALITY", 60, 1, 100)
+
+
 def required_env(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if not value:
@@ -145,14 +165,13 @@ def prepare_previews(
     with Image.open(source) as opened:
         image = ImageOps.exif_transpose(opened).convert("RGBA")
 
-    max_dimension = 1280
-    if max(image.width, image.height) > max_dimension:
+    if max(image.width, image.height) > PREVIEW_MAX_DIMENSION:
         if image.width >= image.height:
-            preview_width = max_dimension
-            preview_height = max(1, round(image.height * max_dimension / image.width))
+            preview_width = PREVIEW_MAX_DIMENSION
+            preview_height = max(1, round(image.height * PREVIEW_MAX_DIMENSION / image.width))
         else:
-            preview_height = max_dimension
-            preview_width = max(1, round(image.width * max_dimension / image.height))
+            preview_height = PREVIEW_MAX_DIMENSION
+            preview_width = max(1, round(image.width * PREVIEW_MAX_DIMENSION / image.height))
         image = image.resize((preview_width, preview_height), Image.Resampling.LANCZOS)
 
     with Image.open(watermark_path) as opened_watermark:
@@ -162,19 +181,18 @@ def prepare_previews(
     position = ((image.width - watermark.width) // 2, (image.height - watermark.height) // 2)
     image.alpha_composite(watermark, position)
 
-    image.convert("RGB").save(preview_destination, format="WEBP", quality=75, method=6)
+    image.convert("RGB").save(preview_destination, format="WEBP", quality=PREVIEW_QUALITY, method=6)
 
     thumbnail = image.copy()
-    thumb_max_dimension = 300
-    if max(thumbnail.width, thumbnail.height) > thumb_max_dimension:
+    if max(thumbnail.width, thumbnail.height) > THUMB_MAX_DIMENSION:
         if thumbnail.width >= thumbnail.height:
-            thumbnail_width = thumb_max_dimension
-            thumbnail_height = max(1, round(thumbnail.height * thumb_max_dimension / thumbnail.width))
+            thumbnail_width = THUMB_MAX_DIMENSION
+            thumbnail_height = max(1, round(thumbnail.height * THUMB_MAX_DIMENSION / thumbnail.width))
         else:
-            thumbnail_height = thumb_max_dimension
-            thumbnail_width = max(1, round(thumbnail.width * thumb_max_dimension / thumbnail.height))
+            thumbnail_height = THUMB_MAX_DIMENSION
+            thumbnail_width = max(1, round(thumbnail.width * THUMB_MAX_DIMENSION / thumbnail.height))
         thumbnail = thumbnail.resize((thumbnail_width, thumbnail_height), Image.Resampling.LANCZOS)
-    thumbnail.convert("RGB").save(thumbnail_destination, format="WEBP", quality=75, method=6)
+    thumbnail.convert("RGB").save(thumbnail_destination, format="WEBP", quality=THUMB_QUALITY, method=6)
 
 
 def file_sha256(path: Path) -> str:
