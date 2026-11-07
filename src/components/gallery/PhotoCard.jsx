@@ -2,8 +2,9 @@ import React from "react";
 import { Check } from "lucide-react";
 import { Image } from "@/components/ui/image";
 import Watermark from "@/components/gallery/Watermark";
+import { BLUR_LOCKED_PREVIEWS } from "@/lib/galleryDisplay";
 
-export default function PhotoCard({ photo, selected, onToggle, onOpen }) {
+function PhotoCard({ photo, selected, onToggle, onOpen }) {
   return (
     <div
       className="relative aspect-[3/4] overflow-hidden bg-neutral-100 select-none"
@@ -17,15 +18,15 @@ export default function PhotoCard({ photo, selected, onToggle, onOpen }) {
         draggable={false}
         onContextMenu={(e) => e.preventDefault()}
         sizes="(max-width: 768px) 33vw, 220px"
-        className={`absolute inset-0 h-full w-full scale-[1.04] pointer-events-none select-none ${
-          photo.is_free ? "" : "blur-[2px]"
+        className={`absolute inset-0 h-full w-full pointer-events-none select-none ${
+          !photo.is_free && BLUR_LOCKED_PREVIEWS ? "scale-[1.04] blur-[2px]" : ""
         }`}
       />
       {!photo.is_free && !photo.thumbnail_url && <Watermark />}
 
       <button
         type="button"
-        onClick={onOpen}
+        onClick={() => onOpen(photo)}
         onContextMenu={(e) => e.preventDefault()}
         aria-label="Open photo preview"
         className="absolute inset-0 z-20 cursor-zoom-in"
@@ -34,7 +35,7 @@ export default function PhotoCard({ photo, selected, onToggle, onOpen }) {
       {!photo.is_free && (
         <button
           type="button"
-          onClick={onToggle}
+          onClick={() => onToggle(photo.id)}
           aria-label={selected ? "Remove from selection" : "Select photo"}
           className={`absolute right-1.5 top-1.5 z-30 grid h-6 w-6 place-items-center rounded-full border transition-all duration-200 active:scale-90 ${
             selected
@@ -52,3 +53,5 @@ export default function PhotoCard({ photo, selected, onToggle, onOpen }) {
     </div>
   );
 }
+
+export default React.memo(PhotoCard);

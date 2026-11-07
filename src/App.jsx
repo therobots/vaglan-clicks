@@ -1,6 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence } from 'framer-motion'
-import { Check } from 'lucide-react'
 import GalleryFooter from '@/components/gallery/GalleryFooter'
 import GalleryHeader from '@/components/gallery/GalleryHeader'
 import LiveStatusPill from '@/components/gallery/LiveStatusPill'
@@ -9,7 +8,7 @@ import ExpiryBanner from '@/components/gallery/ExpiryBanner'
 import TimeFilterBar from '@/components/gallery/TimeFilterBar'
 import GalleryTabs from '@/components/gallery/GalleryTabs'
 import PhotoRemovalDialog from '@/components/gallery/PhotoRemovalDialog'
-import Watermark from '@/components/gallery/Watermark'
+import PhotoCard from '@/components/gallery/PhotoCard'
 import Info from '@/pages/Info'
 import Success from '@/pages/Success'
 import { isSupabaseConfigured, supabase } from './supabaseClient'
@@ -704,13 +703,13 @@ function GalleryApp() {
   }).format(total)
   const activeNightData = nights.find((night) => night.night_key === activeNight)
 
-  const toggleSelected = (photoId) => {
+  const toggleSelected = useCallback((photoId) => {
     setSelectedIds((current) =>
       current.includes(photoId)
         ? current.filter((selectedId) => selectedId !== photoId)
         : [...current, photoId],
     )
-  }
+  }, [])
 
   const downloadFreePhoto = async (photo) => {
     if (!supabase || !photo?.is_free) return
@@ -944,45 +943,12 @@ function GalleryApp() {
                           selected ? 'ring-[2.5px] ring-inset ring-blue-600' : ''
                         }`}
                       >
-                        <button
-                          type="button"
-                          aria-label={`Preview ${photo.filename || 'photo'}`}
-                          onClick={() => setActivePhoto(photo)}
-                          onContextMenu={(e) => e.preventDefault()}
-                          className="absolute inset-0 z-0 h-full w-full cursor-zoom-in"
-                        >
-                          <img
-                            src={photo.thumbnail_url || photo.preview_url}
-                            alt={photo.filename || 'Photo'}
-                            loading="lazy"
-                            decoding="async"
-                            draggable={false}
-                            onContextMenu={(e) => e.preventDefault()}
-                            className={`h-full w-full object-cover pointer-events-none select-none ${
-                              photo.is_free ? '' : 'blur-[2px]'
-                            }`}
-                          />
-                          {!photo.is_free && !photo.thumbnail_url && <Watermark />}
-                        </button>
-                        {!photo.is_free && (
-                          <button
-                            type="button"
-                            aria-label={`${selected ? 'Deselect' : 'Select'} ${
-                              photo.filename || 'photo'
-                            }`}
-                            aria-pressed={selected}
-                            onClick={() => toggleSelected(photo.id)}
-                            className={`absolute right-2 top-2 z-20 grid h-7 w-7 place-items-center rounded-full border-2 transition-colors ${
-                              selected
-                                ? 'border-blue-600 bg-blue-600 text-white'
-                                : 'border-white/90 bg-black/25 text-transparent backdrop-blur-sm'
-                            }`}
-                          >
-                            {selected && (
-                              <Check className="h-4 w-4" strokeWidth={3} aria-hidden="true" />
-                            )}
-                          </button>
-                        )}
+                        <PhotoCard
+                          photo={photo}
+                          selected={selected}
+                          onOpen={setActivePhoto}
+                          onToggle={toggleSelected}
+                        />
                       </article>
                     )
                   })}
