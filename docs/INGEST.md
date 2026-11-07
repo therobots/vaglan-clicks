@@ -1,6 +1,6 @@
 # Camera bridge and photo ingestion
 
-The repository includes [`bridge/camera_bridge.py`](../bridge/camera_bridge.py), a local folder watcher and uploader. It stores untouched originals in the private `private-originals` bucket and creates a watermarked WebP preview plus a 300px WebP thumbnail in the public `public-previews` bucket. Public image objects receive a one-year cache lifetime. The physical watermark uses `src/assets/watermark.png`; override its location with `WATERMARK_IMAGE` if needed.
+The repository includes [`bridge/camera_bridge.py`](../bridge/camera_bridge.py), a local folder watcher and uploader. It stores untouched full-quality originals in the private `private-originals` bucket and creates a low-resolution WebP preview plus a WebP thumbnail with the watermark baked into the image pixels in the public `public-previews` bucket. The public bucket must contain only these marked previews and thumbnails; never upload or serve a raw original publicly. Public image objects receive a one-year cache lifetime. The physical watermark uses `src/assets/watermark.png`; override its location with `WATERMARK_IMAGE` if needed.
 
 Install and run the bridge from the repository root in PowerShell:
 
@@ -13,7 +13,22 @@ $env:CAMERA_TIMEZONE = "Europe/Athens"
 python bridge\camera_bridge.py
 ```
 
-The bridge requires the active Supabase migrations, including `20261021170000_watermarked_photo_delivery.sql`, before it can register photos. The service-role key is privileged: keep it only in the trusted local process environment, never in frontend variables, source control, or browser code.
+The bridge requires the active Supabase migrations, including `20261021170000_watermarked_photo_delivery.sql` and `20261107000000_watermark_baked_flag.sql`, before it can register photos. The latter migration adds `photos.watermark_baked`; public `gallery_photos`, `gallery_nights`, and `gallery_slots` expose only rows marked true. New bridge uploads are registered as baked. The service-role key is privileged: keep it only in the trusted local process environment, never in frontend variables, source control, or browser code.
+
+## Shared preview settings
+
+The bridge and Admin uploader use the same defaults: preview maximum dimension **1080 px** at **60%** WebP quality, and thumbnail maximum dimension **300 px** at **60%** quality. The bridge can override these settings with environment variables:
+
+```powershell
+$env:VAGLAN_PREVIEW_MAX_DIMENSION = "1080"
+$env:VAGLAN_PREVIEW_QUALITY = "60"
+$env:VAGLAN_THUMB_MAX_DIMENSION = "300"
+$env:VAGLAN_THUMB_QUALITY = "60"
+```
+
+The browser/Admin uploader uses the corresponding `VITE_PREVIEW_MAX_DIMENSION`, `VITE_PREVIEW_QUALITY`, `VITE_THUMB_MAX_DIMENSION`, and `VITE_THUMB_QUALITY` settings. Keep the bridge and Vite values aligned when overriding defaults. These values are not secrets; Supabase service-role credentials must never use a `VITE_` variable.
+
+After deploying bridge changes, update the code on the camera laptop and restart the bridge process so it uses the current sizing, quality, and watermark implementation.
 
 ## Album QR sessions
 
@@ -39,3 +54,24 @@ The bridge requires the active Supabase migrations, including `20261021170000_wa
 - The bridge uses the service role only in its trusted local process to upload the three assets and register their paths. Never upload originals from browser code or with the public anon key.
 
 Before enabling ingestion, verify the laptop is NTP-synchronized, run the camera drift check, and confirm the corrected timestamp resolves to the expected Athens night.
+
+## Rebuilding legacy previews
+
+Legacy rows remain hidden from public gallery RPCs until `watermark_baked` is true. Run the rebuild utility from the repository root, using a trusted operator environment with the service-role key set. It reuses the bridge's `prepare_previews` implementation, looks up originals with `get_photo_original_info`, moves recoverable legacy sources into `private-originals`, uploads new marked WebP files to `public-previews`, updates the photo row, and only then removes old objects from the legacy public buckets. It never removes objects from `private-originals`.
+
+The default is a **dry run**: it downloads/processes candidates and reports rebuildable photos without changing storage or database rows.
+
+```powershell
+$env:SUPABASE_URL = "https://YOUR_PROJECT_REF.supabase.co"
+$env:SUPABASE_SERVICE_ROLE_KEY = "YOUR_SERVER_SIDE_SERVICE_ROLE_KEY"
+python tools\rebuild_previews.py
+```
+
+Review the dry-run failures, missing-original list, and remaining object counts for `photos` and `previews`. Back up the database and legacy Storage objects, then explicitly pass `--apply` to upload, update, and remove legacy public objects. Use `--limit N` to process a small batch first; rerunning is safe and resumes rows that remain unmarked.
+
+```powershell
+python tools\rebuild_previews.py --limit 10 --apply
+python tools\rebuild_previews.py --apply
+```
+
+The script refuses to delete a legacy public object unless the original is verified in `private-originals` and the replacement preview and thumbnail have been uploaded and recorded. Photos without a recoverable original stay unmarked and hidden; restore a trusted original before retrying them. Never run with `--apply` until the dry-run report and backups have been reviewed.
