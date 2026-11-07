@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Watch a camera folder, process QR album markers, and upload ordinary photos to the active album."""
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from PIL import ExifTags, Image, ImageOps
-from pyzbar.pyzbar import decode
 from supabase import Client, create_client
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
@@ -81,6 +80,11 @@ def parse_album_url(raw_url: str, gallery_base_url: str | None = None) -> str | 
 
 def detect_album_qr(path: Path, gallery_base_url: str | None = None) -> str | None:
     try:
+        from pyzbar.pyzbar import decode
+    except Exception:
+        LOG.warning("pyzbar is not available or missing libzbar dependencies; QR decoding disabled.")
+        return None
+    try:
         with Image.open(path) as image:
             decoded = decode(image)
     except Exception:
@@ -140,9 +144,16 @@ def prepare_previews(
 ) -> None:
     with Image.open(source) as opened:
         image = ImageOps.exif_transpose(opened).convert("RGBA")
-    if image.width > 1280:
-        preview_height = max(1, round(image.height * 1280 / image.width))
-        image = image.resize((1280, preview_height), Image.Resampling.LANCZOS)
+
+    max_dimension = 1280
+    if max(image.width, image.height) > max_dimension:
+        if image.width >= image.height:
+            preview_width = max_dimension
+            preview_height = max(1, round(image.height * max_dimension / image.width))
+        else:
+            preview_height = max_dimension
+            preview_width = max(1, round(image.width * max_dimension / image.height))
+        image = image.resize((preview_width, preview_height), Image.Resampling.LANCZOS)
 
     with Image.open(watermark_path) as opened_watermark:
         watermark = opened_watermark.convert("RGBA")
@@ -152,10 +163,17 @@ def prepare_previews(
     image.alpha_composite(watermark, position)
 
     image.convert("RGB").save(preview_destination, format="WEBP", quality=75, method=6)
-    thumbnail = image
-    if thumbnail.width > 300:
-        thumbnail_height = max(1, round(thumbnail.height * 300 / thumbnail.width))
-        thumbnail = thumbnail.resize((300, thumbnail_height), Image.Resampling.LANCZOS)
+
+    thumbnail = image.copy()
+    thumb_max_dimension = 300
+    if max(thumbnail.width, thumbnail.height) > thumb_max_dimension:
+        if thumbnail.width >= thumbnail.height:
+            thumbnail_width = thumb_max_dimension
+            thumbnail_height = max(1, round(thumbnail.height * thumb_max_dimension / thumbnail.width))
+        else:
+            thumbnail_height = thumb_max_dimension
+            thumbnail_width = max(1, round(thumbnail.width * thumb_max_dimension / thumbnail.height))
+        thumbnail = thumbnail.resize((thumbnail_width, thumbnail_height), Image.Resampling.LANCZOS)
     thumbnail.convert("RGB").save(thumbnail_destination, format="WEBP", quality=75, method=6)
 
 

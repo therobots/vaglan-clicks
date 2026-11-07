@@ -103,11 +103,12 @@ await test('Read public gallery server clock', 'ALLOW', () =>
 const currentNight = nightsResult?.data?.[0]?.night_key
 if (currentNight) {
   const slotsResult = await test('Read public gallery time slots', 'ALLOW', () =>
-    supabase.rpc('gallery_slots', { night_key_input: currentNight }),
+    supabase.rpc('gallery_slots', { album_id_input: 'general', night_key_input: currentNight }),
   )
   const firstSlot = slotsResult?.data?.[0]
   await test('Read public paginated gallery photos', 'ALLOW', () =>
     supabase.rpc('gallery_photos', {
+      album_id_input: 'general',
       night_key_input: currentNight,
       slot_start_input: firstSlot?.slot_start || null,
       slot_end_input: firstSlot?.slot_end || null,

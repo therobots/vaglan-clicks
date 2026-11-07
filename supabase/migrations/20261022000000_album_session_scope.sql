@@ -12,6 +12,7 @@ create index if not exists photos_album_id_timestamp_idx
 
 grant select (album_id) on public.photos to anon, authenticated;
 
+drop function if exists public.register_ingested_photo(uuid, text, text, text, bigint, text, text);
 create or replace function public.register_ingested_photo(
   photo_id_input uuid,
   preview_url_input text,
@@ -151,9 +152,10 @@ as $$
   order by grouped.slot_start desc;
 $$;
 
+drop function if exists public.gallery_photos(date, timestamptz, timestamptz, bigint, uuid, integer);
 create or replace function public.gallery_photos(
-  album_id_input text,
-  night_key_input date,
+  album_id_input text default 'general',
+  night_key_input date default null,
   slot_start_input timestamptz default null,
   slot_end_input timestamptz default null,
   before_timestamp_input bigint default null,
