@@ -11,6 +11,8 @@ const sessionDurationMs = 4 * 60 * 60 * 1000;
 const maxLoginFailures = 5;
 const loginWindowMs = 15 * 60 * 1000;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const maxPreviewBytes = 600_000;
+const maxThumbnailBytes = 100_000;
 
 const respond = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -26,6 +28,29 @@ const sha256 = async (value: string) => {
 const newSessionToken = () => {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
   return btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+};
+
+const decodeWebpBase64 = (value: string, label: string, maxBytes: number) => {
+  if (value.length > Math.ceil(maxBytes / 3) * 4) {
+    return { error: `${label} exceeds the ${maxBytes} byte limit.` };
+  }
+  let binary: string;
+  try {
+    binary = atob(value);
+  } catch {
+    return { error: `${label} must be valid base64.` };
+  }
+  if (binary.length > maxBytes) {
+    return { error: `${label} exceeds the ${maxBytes} byte limit.` };
+  }
+  if (
+    binary.length < 12 ||
+    binary.slice(0, 4) !== "RIFF" ||
+    binary.slice(8, 12) !== "WEBP"
+  ) {
+    return { error: `${label} must have a WebP RIFF signature.` };
+  }
+  return { bytes: Uint8Array.from(binary, (character) => character.charCodeAt(0)) };
 };
 
 const getPreviewPath = (url: string, supabaseUrl: string) => {
@@ -302,8 +327,16 @@ Deno.serve(async (request) => {
       const previewPath = `${nightKey}/${baseName}.webp`;
       const thumbnailPath = `${nightKey}/thumbs/${baseName}.webp`;
 
-      const previewBytes = Uint8Array.from(atob(previewBase64), (c) => c.charCodeAt(0));
-      const thumbBytes = Uint8Array.from(atob(thumbnailBase64), (c) => c.charCodeAt(0));
+      const previewResult = decodeWebpBase64(previewBase64, "Preview", maxPreviewBytes);
+      if ("error" in previewResult) return respond({ error: previewResult.error }, 400);
+      const thumbnailResult = decodeWebpBase64(
+        thumbnailBase64,
+        "Thumbnail",
+        maxThumbnailBytes,
+      );
+      if ("error" in thumbnailResult) return respond({ error: thumbnailResult.error }, 400);
+      const previewBytes = previewResult.bytes;
+      const thumbBytes = thumbnailResult.bytes;
 
       if (originalBase64) {
         const origBytes = Uint8Array.from(atob(originalBase64), (c) => c.charCodeAt(0));
@@ -350,62 +383,6 @@ Deno.serve(async (request) => {
       if (rpcError) throw rpcError;
 
       return respond({ success: true, photoId: newPhotoId, previewUrl, thumbnailUrl });
-    }
-
-    if (action === "update-photo-preview") {
-      const targetPhotoId = typeof payload.photoId === "string" && uuidPattern.test(payload.photoId)
-        ? payload.photoId
-        : "";
-      if (!targetPhotoId) return respond({ error: "Invalid photo ID." }, 400);
-
-      const filename = typeof payload.filename === "string" ? payload.filename : "photo.jpg";
-      const timestamp = typeof payload.timestamp === "number" ? payload.timestamp : Date.now();
-      const previewBase64 = typeof payload.previewBase64 === "string" ? payload.previewBase64 : "";
-      const thumbnailBase64 = typeof payload.thumbnailBase64 === "string" ? payload.thumbnailBase64 : "";
-
-      if (!previewBase64 || !thumbnailBase64) {
-        return respond({ error: "Missing watermarked preview or thumbnail data." }, 400);
-      }
-
-      const capture = new Date(timestamp);
-      const nightDate = new Date(capture.getTime() - 12 * 60 * 60 * 1000);
-      const nightKey = nightDate.toISOString().slice(0, 10);
-      const stem = filename.replace(/\.[^.]+$/, "").replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 80) || "photo";
-      const baseName = `${targetPhotoId}-${stem}`;
-      const previewPath = `${nightKey}/${baseName}.webp`;
-      const thumbnailPath = `${nightKey}/thumbs/${baseName}.webp`;
-
-      const previewBytes = Uint8Array.from(atob(previewBase64), (c) => c.charCodeAt(0));
-      const thumbBytes = Uint8Array.from(atob(thumbnailBase64), (c) => c.charCodeAt(0));
-
-      const { error: prevError } = await client.storage
-        .from("public-previews")
-        .upload(previewPath, previewBytes, {
-          contentType: "image/webp",
-          cacheControl: "31536000",
-          upsert: true,
-        });
-      if (prevError) throw prevError;
-
-      const { error: thumbError } = await client.storage
-        .from("public-previews")
-        .upload(thumbnailPath, thumbBytes, {
-          contentType: "image/webp",
-          cacheControl: "31536000",
-          upsert: true,
-        });
-      if (thumbError) throw thumbError;
-
-      const previewUrl = client.storage.from("public-previews").getPublicUrl(previewPath).data.publicUrl;
-      const thumbnailUrl = client.storage.from("public-previews").getPublicUrl(thumbnailPath).data.publicUrl;
-
-      const { error: updateError } = await client
-        .from("photos")
-        .update({ preview_url: previewUrl, thumbnail_url: thumbnailUrl })
-        .eq("id", targetPhotoId);
-      if (updateError) throw updateError;
-
-      return respond({ success: true, photoId: targetPhotoId, previewUrl, thumbnailUrl });
     }
 
     if (action === "list-removals") {
