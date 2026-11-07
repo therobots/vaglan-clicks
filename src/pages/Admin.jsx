@@ -637,6 +637,15 @@ export default function Admin() {
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-xs text-gray-500">{selectedPhotoIds.length} selected</span>
+                <button
+                  type="button"
+                  disabled={isReprocessing || !photos.length}
+                  onClick={handleReprocessExisting}
+                  className="inline-flex items-center gap-2 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-800 hover:bg-emerald-100 disabled:opacity-50"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${isReprocessing ? 'animate-spin' : ''}`} />
+                  {isReprocessing ? 'Reprocessing…' : 'Watermark existing photos'}
+                </button>
                 <button type="button" disabled={!selectedPhotoIds.length || Boolean(busyAction)} onClick={makeSelectedFree} className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-bold disabled:opacity-50">Make selected free</button>
                 <button type="button" disabled={!selectedPhotoIds.length || Boolean(busyAction)} onClick={deleteSelected} className="rounded-lg border border-red-200 bg-white px-3 py-2 text-xs font-bold text-red-700 disabled:opacity-50">Delete selected</button>
                 <button
