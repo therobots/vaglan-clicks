@@ -74,4 +74,4 @@ python tools\rebuild_previews.py --limit 10 --apply
 python tools\rebuild_previews.py --apply
 ```
 
-The script refuses to delete a legacy public object unless the original is verified in `private-originals` and the replacement preview and thumbnail have been uploaded and recorded. Photos without a recoverable original stay unmarked and hidden; restore a trusted original before retrying them. Never run with `--apply` until the dry-run report and backups have been reviewed.
+The script refuses to delete a legacy public object unless the original is verified in `private-originals` and the replacement preview and thumbnail have been uploaded and recorded. Failed legacy-object cleanup is saved to `%USERPROFILE%\.vaglan-clicks-rebuild-pending.json` and retried on the next `--apply` run. Photos without a recoverable original stay unmarked and hidden; restore a trusted original before retrying them. Never run with `--apply` until the dry-run report and backups have been reviewed.

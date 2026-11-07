@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import mimetypes
 import os
 import sys
@@ -27,6 +28,7 @@ from supabase import Client, create_client  # noqa: E402
 LEGACY_PUBLIC_BUCKETS = {"photos", "previews"}
 LEGACY_ORIGINAL_BUCKETS = {"originals", "photo-originals"}
 WATERMARK_PATH = ROOT / "src" / "assets" / "watermark.png"
+PENDING_CLEANUP_PATH = Path.home() / ".vaglan-clicks-rebuild-pending.json"
 
 
 def parse_public_legacy_url(url: str | None) -> tuple[str, str] | None:
@@ -102,7 +104,7 @@ def resolve_original(
     client: Client,
     photo: dict[str, object],
     apply: bool,
-) -> tuple[bytes, str, list[tuple[str, str]], bool]:
+) -> tuple[bytes, str, list[tuple[str, str]]]:
     photo_id = str(photo["id"])
     old_objects = legacy_source_paths(photo)
     original = get_original_info(client, photo_id)
@@ -147,7 +149,7 @@ def resolve_original(
                     "original_bucket_input": ORIGINALS_BUCKET,
                 },
             ).execute()
-        return original_bytes, destination_path, old_objects, True
+        return original_bytes, destination_path, old_objects
 
     if original["storage_bucket"] == ORIGINALS_BUCKET:
         private_path = original["object_path"]
@@ -174,7 +176,7 @@ def resolve_original(
                     "original_bucket_input": ORIGINALS_BUCKET,
                 },
             ).execute()
-        return original_bytes, private_path, old_objects, True
+        return original_bytes, private_path, old_objects
 
     if original["storage_bucket"] != ORIGINALS_BUCKET:
         if not old_objects:
@@ -203,9 +205,9 @@ def resolve_original(
                     "original_bucket_input": ORIGINALS_BUCKET,
                 },
             ).execute()
-        return original_bytes, private_path, old_objects, True
+        return original_bytes, private_path, old_objects
 
-    return original_bytes, private_path, old_objects, False
+    return original_bytes, private_path, old_objects
 
 
 def upload_preview(client: Client, path: str, local_path: Path) -> None:
@@ -221,8 +223,108 @@ def upload_preview(client: Client, path: str, local_path: Path) -> None:
         )
 
 
+def read_pending_cleanup() -> list[dict[str, object]]:
+    if not PENDING_CLEANUP_PATH.exists():
+        return []
+    try:
+        entries = json.loads(PENDING_CLEANUP_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"Could not read cleanup journal {PENDING_CLEANUP_PATH}: {error}") from error
+    if not isinstance(entries, list):
+        raise RuntimeError(f"Cleanup journal {PENDING_CLEANUP_PATH} must contain a JSON list.")
+    for entry in entries:
+        if (
+            not isinstance(entry, dict)
+            or not isinstance(entry.get("photo_id"), str)
+            or not isinstance(entry.get("original_path"), str)
+            or not isinstance(entry.get("legacy_objects"), list)
+            or any(
+                not isinstance(item, dict)
+                or item.get("bucket") not in LEGACY_PUBLIC_BUCKETS
+                or not isinstance(item.get("path"), str)
+                or any(part in {"", ".", ".."} for part in item["path"].split("/"))
+                for item in entry["legacy_objects"]
+            )
+        ):
+            raise RuntimeError(f"Cleanup journal {PENDING_CLEANUP_PATH} contains invalid data.")
+    return entries
+
+
+def write_pending_cleanup(entries: list[dict[str, object]]) -> None:
+    temporary_path = PENDING_CLEANUP_PATH.with_suffix(".tmp")
+    try:
+        temporary_path.write_text(json.dumps(entries, indent=2), encoding="utf-8")
+        temporary_path.replace(PENDING_CLEANUP_PATH)
+    except OSError as error:
+        raise RuntimeError(f"Could not write cleanup journal {PENDING_CLEANUP_PATH}: {error}") from error
+
+
+def remember_pending_cleanup(
+    photo_id: str,
+    original_path: str,
+    old_objects: list[tuple[str, str]],
+) -> None:
+    if not old_objects:
+        return
+    entries = read_pending_cleanup()
+    entry = {
+        "photo_id": photo_id,
+        "original_path": original_path,
+        "legacy_objects": [
+            {"bucket": bucket, "path": path}
+            for bucket, path in old_objects
+        ],
+    }
+    entries = [item for item in entries if item["photo_id"] != photo_id]
+    entries.append(entry)
+    write_pending_cleanup(entries)
+
+
+def retry_pending_cleanup(client: Client) -> tuple[int, list[tuple[str, str]]]:
+    entries = read_pending_cleanup()
+    if not entries:
+        return 0, []
+
+    remaining = []
+    failures = []
+    completed = 0
+    for entry in entries:
+        photo_id = str(entry["photo_id"])
+        try:
+            response = (
+                client.table("photos")
+                .select("watermark_baked, preview_url")
+                .eq("id", photo_id)
+                .maybe_single()
+                .execute()
+            )
+            photo = response_data(response)
+            if not photo or not photo.get("watermark_baked"):
+                remaining.append(entry)
+                continue
+            if parse_public_legacy_url(photo.get("preview_url")):
+                remaining.append(entry)
+                continue
+            original = download_object(client, ORIGINALS_BUCKET, str(entry["original_path"]))
+            if not original:
+                raise RuntimeError("Private original is missing or empty; legacy objects were retained.")
+            for item in entry["legacy_objects"]:
+                bucket = str(item["bucket"])
+                path = str(item["path"])
+                result = client.storage.from_(bucket).remove([path])
+                error = getattr(result, "error", None)
+                if error:
+                    raise RuntimeError(f"Could not remove legacy object {bucket}/{path}: {error}")
+            completed += 1
+        except Exception as error:
+            remaining.append(entry)
+            failures.append((photo_id, str(error)))
+    write_pending_cleanup(remaining)
+    return completed, failures
+
+
 def rebuild_photo(client: Client, photo: dict[str, object], apply: bool) -> bool:
-    original_bytes, original_path, old_objects, migrated = resolve_original(client, photo, apply)
+    original_bytes, original_path, old_objects = resolve_original(client, photo, apply)
     photo_id = str(photo["id"])
     filename = str(photo.get("filename") or "photo")
     timestamp = int(photo["timestamp"])
@@ -240,10 +342,9 @@ def rebuild_photo(client: Client, photo: dict[str, object], apply: bool) -> bool
         if not apply:
             return False
 
-        if migrated:
-            verified = download_object(client, ORIGINALS_BUCKET, original_path)
-            if not verified:
-                raise RuntimeError("Private original is missing or empty; legacy objects were not deleted.")
+        verified = download_object(client, ORIGINALS_BUCKET, original_path)
+        if not verified:
+            raise RuntimeError("Private original is missing or empty; legacy objects were not deleted.")
 
         preview_object = f"{night}/{base_name}.webp"
         thumbnail_object = f"{night}/thumbs/{base_name}.webp"
@@ -251,6 +352,7 @@ def rebuild_photo(client: Client, photo: dict[str, object], apply: bool) -> bool
         upload_preview(client, thumbnail_object, thumbnail_path)
         preview_url = client.storage.from_(PREVIEW_BUCKET).get_public_url(preview_object)
         thumbnail_url = client.storage.from_(PREVIEW_BUCKET).get_public_url(thumbnail_object)
+        remember_pending_cleanup(photo_id, original_path, old_objects)
 
         update = (
             client.table("photos")
@@ -268,14 +370,6 @@ def rebuild_photo(client: Client, photo: dict[str, object], apply: bool) -> bool
         )
         if not response_data(update):
             raise RuntimeError("Photo row was not updated; legacy objects were not deleted.")
-
-        for bucket, object_path in old_objects:
-            if bucket not in LEGACY_PUBLIC_BUCKETS:
-                raise RuntimeError("Refusing to delete an object outside legacy public buckets.")
-            result = client.storage.from_(bucket).remove([object_path])
-            error = getattr(result, "error", None)
-            if error:
-                raise RuntimeError(f"Could not remove legacy public object {bucket}/{object_path}: {error}")
     return True
 
 
@@ -355,6 +449,15 @@ def main() -> int:
         except Exception as error:
             message = str(error).replace(service_key, "[REDACTED]")
             failures.append((photo_id, message))
+
+    if args.apply:
+        cleaned, cleanup_failures = retry_pending_cleanup(client)
+        if cleanup_failures:
+            failures.extend(
+                (f"cleanup:{photo_id}", message.replace(service_key, "[REDACTED]"))
+                for photo_id, message in cleanup_failures
+            )
+        print(f"Legacy cleanup entries completed: {cleaned}")
 
     object_counts: dict[str, int | str] = {}
     for bucket in sorted(LEGACY_PUBLIC_BUCKETS):

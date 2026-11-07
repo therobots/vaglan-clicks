@@ -22,8 +22,8 @@ create table if not exists public.gallery_state (
 alter table public.gallery_state
   add column if not exists timer_ends_at timestamptz;
 
-insert into public.gallery_state (id)
-values (1)
+insert into public.gallery_state (id, admin_pin)
+values (1, 'temp_pin_8972')
 on conflict (id) do nothing;
 
 create table if not exists private.gallery_admin_credentials (
