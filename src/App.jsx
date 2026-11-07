@@ -429,31 +429,39 @@ function GalleryApp() {
     if (!supabase) return undefined
     let active = true
     const reconcileVisibility = async () => {
+      if (document.visibilityState !== 'visible') return
       const ids = photosRef.current.map((photo) => photo.id).filter(Boolean)
       if (!ids.length) return
-      const { data, error } = await supabase
-        .from('photos')
-        .select('id')
-        .in('id', ids)
-        .eq('album_id', selectedAlbum)
-      if (!active) return
-      if (error) {
-        setLoadError(`Could not refresh photo visibility: ${error.message}`)
-        return
-      }
-      const visibleIds = new Set((data || []).map((photo) => photo.id))
-      for (const photoId of ids) {
-        if (!visibleIds.has(photoId)) hidePhoto(photoId)
+      for (let offset = 0; offset < ids.length; offset += 100) {
+        const chunk = ids.slice(offset, offset + 100)
+        const { data, error } = await supabase
+          .from('photos')
+          .select('id')
+          .in('id', chunk)
+          .eq('album_id', selectedAlbum)
+        if (!active) return
+        if (error) {
+          setLoadError(`Could not refresh photo visibility: ${error.message}`)
+          return
+        }
+        const visibleIds = new Set((data || []).map((photo) => photo.id))
+        for (const photoId of chunk) {
+          if (!visibleIds.has(photoId)) hidePhoto(photoId)
+        }
       }
     }
-    const interval = window.setInterval(() => {
+    const reconcileIfVisible = () => {
+      if (document.visibilityState !== 'visible') return
       reconcileVisibility().catch((error) => {
         if (active) setLoadError(`Could not refresh photo visibility: ${error.message}`)
       })
-    }, 30000)
+    }
+    const interval = window.setInterval(reconcileIfVisible, 90000)
+    document.addEventListener('visibilitychange', reconcileIfVisible)
     return () => {
       active = false
       window.clearInterval(interval)
+      document.removeEventListener('visibilitychange', reconcileIfVisible)
     }
   }, [hidePhoto, selectedAlbum])
 
@@ -461,6 +469,7 @@ function GalleryApp() {
     if (!supabase) return undefined
     let active = true
     const refreshNightAvailability = async () => {
+      if (document.visibilityState !== 'visible') return
       const [nightsResult, clockResult] = await Promise.all([
         supabase.rpc('gallery_nights', { album_id_input: selectedAlbum }),
         supabase.rpc('gallery_server_now'),
@@ -488,14 +497,18 @@ function GalleryApp() {
       const serverNow = parseTimestamp(clockResult.data)
       if (Number.isFinite(serverNow)) setServerOffsetMs(serverNow - Date.now())
     }
-    const interval = window.setInterval(() => {
+    const refreshIfVisible = () => {
+      if (document.visibilityState !== 'visible') return
       refreshNightAvailability().catch((error) => {
         if (active) setLoadError(`Could not refresh gallery nights: ${error.message}`)
       })
-    }, 60000)
+    }
+    const interval = window.setInterval(refreshIfVisible, 60000)
+    document.addEventListener('visibilitychange', refreshIfVisible)
     return () => {
       active = false
       window.clearInterval(interval)
+      document.removeEventListener('visibilitychange', refreshIfVisible)
     }
   }, [activeNight, selectedAlbum])
 
