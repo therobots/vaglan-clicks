@@ -6,5 +6,3 @@ import '@/index.css'
 ReactDOM.createRoot(document.getElementById('root')).render(
   <App />
 )
-
-// Trigger Vercel rebuild for env vars.
