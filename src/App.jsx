@@ -327,10 +327,10 @@ function GalleryApp() {
         supabase.rpc('gallery_nights', { album_id_input: selectedAlbum }),
         supabase.rpc('gallery_server_now'),
         supabase
-          .from('gallery_state')
-          .select('*')
-          .eq('id', 1)
-          .maybeSingle(),
+  .from('gallery_state')
+  .select('first_photo_cents,extra_photo_cents,tip_options_cents,currency')
+  .eq('id', 1)
+  .maybeSingle()
       ])
       if (!active) return
       if (nightsResult.error) {

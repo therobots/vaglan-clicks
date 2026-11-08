@@ -47,3 +47,5 @@ export-report.json
 # Python bytecode
 __pycache__/
 *.pyc
+
+.vercel
