@@ -79,14 +79,58 @@ const test = async (
   }
 }
 
-const photosResult = await test('Read public preview columns', 'ALLOW', () =>
-  supabase
-    .from('photos')
-    .select('id,preview_url,filename,timestamp,is_free,created_at,expires_at')
-    .limit(1),
-  ({ data }) =>
-    (data || []).every((photo) => Date.parse(photo.expires_at) > Date.now()),
+await test('Deny direct public photos table reads', 'DENY', () =>
+  supabase.from('photos').select('id,album_id').limit(1),
 )
+const otherAlbumId = process.env.AUDIT_OTHER_ALBUM_ID
+if (otherAlbumId && /^[A-Za-z0-9_-]{1,64}$/.test(otherAlbumId)) {
+  const params = new URLSearchParams({
+    select: 'id,album_id',
+    album_id: `eq.${otherAlbumId}`,
+    limit: '1',
+  })
+  try {
+    const response = await fetch(`${supabaseUrl.replace(/\/+$/, '')}/rest/v1/photos?${params}`, {
+      headers: { apikey: supabaseAnonKey, Authorization: `Bearer ${supabaseAnonKey}` },
+      cache: 'no-store',
+    })
+    if (isAuthorizationFailure({ status: response.status })) {
+      results.push({
+        label: 'Deny direct REST read of another album',
+        status: 'PASS',
+        detail: 'Access denied as expected',
+      })
+    } else if (response.ok) {
+      const rows = await response.json()
+      results.push({
+        label: 'Deny direct REST read of another album',
+        status: rows.length ? 'FAIL' : 'SKIP',
+        detail: rows.length
+          ? `Returned ${rows.length} row(s) from album ${otherAlbumId}.`
+          : `No row exists in album ${otherAlbumId}; access denial was not proven.`,
+      })
+    } else {
+      const message = await response.text()
+      results.push({
+        label: 'Deny direct REST read of another album',
+        status: 'FAIL',
+        detail: `Unexpected HTTP ${response.status}: ${message}`,
+      })
+    }
+  } catch (error) {
+    results.push({
+      label: 'Deny direct REST read of another album',
+      status: 'FAIL',
+      detail: errorSummary(error),
+    })
+  }
+} else {
+  results.push({
+    label: 'Deny direct REST read of another album',
+    status: 'SKIP',
+    detail: 'Set AUDIT_OTHER_ALBUM_ID to an existing album ID to run this probe.',
+  })
+}
 await test('Read public gallery pricing', 'ALLOW', () =>
   supabase
     .from('gallery_state')
@@ -106,7 +150,7 @@ if (currentNight) {
     supabase.rpc('gallery_slots', { album_id_input: 'general', night_key_input: currentNight }),
   )
   const firstSlot = slotsResult?.data?.[0]
-  await test('Read public paginated gallery photos', 'ALLOW', () =>
+  var photosResult = await test('Read public paginated gallery photos via RPC', 'ALLOW', () =>
     supabase.rpc('gallery_photos', {
       album_id_input: 'general',
       night_key_input: currentNight,
@@ -187,20 +231,54 @@ if (unavailablePhotoId) {
       detail: 'AUDIT_UNAVAILABLE_PHOTO_ID must be a UUID.',
     })
   } else {
-    const visibilityCheck = await supabase
-      .from('photos')
-      .select('id')
-      .eq('id', unavailablePhotoId)
-      .maybeSingle()
-    if (visibilityCheck.error || visibilityCheck.data) {
+    const fixtureNight = process.env.AUDIT_UNAVAILABLE_PHOTO_NIGHT
+    const fixtureAlbum = process.env.AUDIT_UNAVAILABLE_PHOTO_ALBUM_ID || 'general'
+    if (
+      !/^\d{4}-\d{2}-\d{2}$/.test(fixtureNight || '') ||
+      !/^[A-Za-z0-9_-]{1,64}$/.test(fixtureAlbum)
+    ) {
       results.push({
         label: 'Reject hidden or expired photo-removal request',
         status: 'FAIL',
-        detail: visibilityCheck.error
-          ? `Could not verify fixture visibility: ${errorSummary(visibilityCheck.error)}`
-          : 'The supplied photo is public and was not submitted for removal.',
+        detail: 'Set AUDIT_UNAVAILABLE_PHOTO_NIGHT and a valid AUDIT_UNAVAILABLE_PHOTO_ALBUM_ID.',
       })
     } else {
+      let beforeTimestamp = null
+      let beforePhotoId = null
+      let fixtureIsVisible = false
+      let visibilityError = null
+      while (!fixtureIsVisible) {
+        const { data, error } = await supabase.rpc('gallery_photos', {
+          album_id_input: fixtureAlbum,
+          night_key_input: fixtureNight,
+          slot_start_input: null,
+          slot_end_input: null,
+          before_timestamp_input: beforeTimestamp,
+          before_photo_id_input: beforePhotoId,
+          limit_input: 100,
+        })
+        if (error) {
+          visibilityError = error
+          break
+        }
+        if ((data || []).some((item) => item.id === unavailablePhotoId)) {
+          fixtureIsVisible = true
+          break
+        }
+        if (!data || data.length < 100) break
+        const lastPhoto = data[data.length - 1]
+        beforeTimestamp = lastPhoto.timestamp
+        beforePhotoId = lastPhoto.id
+      }
+      if (visibilityError || fixtureIsVisible) {
+        results.push({
+          label: 'Reject hidden or expired photo-removal request',
+          status: 'FAIL',
+          detail: visibilityError
+            ? `Could not verify fixture visibility: ${errorSummary(visibilityError)}`
+            : 'The supplied photo is public and was not submitted for removal.',
+        })
+      } else {
       await test(
         'Reject hidden or expired photo-removal request',
         'DENY',
@@ -210,13 +288,14 @@ if (unavailablePhotoId) {
         () => false,
         (error) => Number(error?.context?.status ?? error?.status ?? error?.statusCode) === 404,
       )
+      }
     }
   }
 } else {
   results.push({
     label: 'Reject hidden or expired photo-removal request',
     status: 'SKIP',
-    detail: 'Set AUDIT_UNAVAILABLE_PHOTO_ID to a hidden/expired staging photo UUID; this check does not alter the photo.',
+    detail: 'Set AUDIT_UNAVAILABLE_PHOTO_ID plus its album and night to a hidden/expired staging photo UUID; this check does not alter the photo.',
   })
 }
 results.push({
