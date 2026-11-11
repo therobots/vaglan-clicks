@@ -48,6 +48,19 @@ The hardening migration intentionally revokes direct anonymous/authenticated wri
 
 The old migration is archived at `sql-archive\20261019210000_gallery_security.sql` only for reference and must not be applied to this existing project.
 
+## Cached public gallery API
+
+The public gallery reads album bootstrap data and photo pages through the Vercel `/api/bootstrap` and `/api/feed` routes. Configure these Vercel **runtime/server-side** environment variables for Production, Preview, and Development:
+
+- `SUPABASE_URL`: the Supabase project URL.
+- `SUPABASE_ANON_KEY`: that project's public anon key.
+
+These non-`VITE_` variables are consumed only by the Vercel API functions, which call album-scoped RPCs and return `Cache-Control: public, s-maxage=5, stale-while-revalidate=30` responses with ETags. Never configure a service-role key here. The anon key is public by Supabase design; the server-side copy is not compiled into the gallery bundle.
+
+The existing `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` build variables remain necessary for the lazy-loaded admin dashboard and direct requests to secured Edge Functions. Do not use the Vite-prefixed variables in the cached API functions. For local API development, use `vercel dev` so `/api/*` routes run; Vite's development server alone serves only the frontend.
+
+Before deploying the new API routes, apply `20261111162000_gallery_recently_hidden.sql` through the reviewed database-migration workflow. It exposes only recently hidden photo IDs for the requested album, allowing polling clients to remove hidden photos without reading `public.photos`. The Vercel routes require the Phase 2 migration `20261111151200_gallery_feed_indexes_and_cleanup.sql` for persisted feed keys and the `after` cursor. No migration is applied automatically by deployment.
+
 ## Per-night expiry and scheduled purge
 
 The active gallery migrations add `photos.expires_at`, computed by a database trigger as 12:00 Europe/Athens on the day after the capture night plus `gallery_state.retention_hours` (default 48), and private removal-request tracking. Existing rows are backfilled safely. The old `gallery_state.timer_ends_at` column and timer RPCs remain for migration compatibility, but the public application and admin UI no longer use them.

@@ -2,9 +2,8 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App.jsx'
 import '@/index.css'
-import { isSupabaseConfigured } from './supabaseClient'
+import { isSupabaseConfigured, supabaseUrl } from './lib/supabaseConfig'
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL?.trim()
 if (isSupabaseConfigured && supabaseUrl) {
   const preconnect = document.createElement('link')
   preconnect.rel = 'preconnect'

@@ -9,6 +9,12 @@ import GalleryTabs from '@/components/gallery/GalleryTabs'
 import PhotoRemovalDialog from '@/components/gallery/PhotoRemovalDialog'
 import PhotoCard from '@/components/gallery/PhotoCard'
 import { isSupabaseConfigured, supabase } from './supabaseClient'
+import {
+  fetchCachedJson,
+  galleryBootstrapPath,
+  galleryFeedPath,
+  invokeEdgeFunction,
+} from '@/lib/galleryApi'
 import { cacheCartSelection, readCartSelection, readCartTip } from '@/lib/orderSession'
 import { edgeFunctionErrorMessage } from '@/lib/edgeFunctionError'
 import {
@@ -53,11 +59,6 @@ const normalizePhotoRow = (photo) => ({
   ...photo,
   is_free: Boolean(photo?.is_free ?? false),
 })
-const isMissingPricingColumns = (error) =>
-  error?.code === '42703' ||
-  error?.code === 'PGRST204' ||
-  /((first_photo_cents|extra_photo_cents|tip_options_cents|currency)|gallery_state)/i.test(String(error?.message || '')) &&
-  /column|table|schema cache|does not exist/i.test(String(error?.message || ''))
 /** @param {unknown} value @returns {value is { first_photo_cents: number, extra_photo_cents: number, tip_options_cents: number[], currency: string }} */
 const hasPricingSettings = (value) =>
   typeof value === 'object' &&
@@ -141,6 +142,10 @@ function GalleryApp() {
   const lastRealtimeMetadataRefreshRef = useRef(0)
   const loadMoreSentinelRef = useRef(null)
   const loadingMoreLockRef = useRef(false)
+  const bootstrapEtagRef = useRef('')
+  const bootstrapDataRef = useRef(null)
+  const latestPhotoRef = useRef(null)
+  const feedCacheRef = useRef(new Map())
 
   const setAlbumSelection = useCallback((nextValue) => {
     const safeAlbum = normalizeAlbumId(nextValue, DEFAULT_ALBUM_ID)
@@ -197,13 +202,16 @@ function GalleryApp() {
   const loadPhotoPage = useCallback(
     async ({
       append = false,
+      prepend = false,
       beforeTimestamp = null,
       beforePhotoId = null,
+      afterTimestamp = null,
+      afterPhotoId = null,
       night = activeNight,
       slot = activeSlot,
     } = {}) => {
       const requestId = ++pageRequestId.current
-      if (!supabase || !night) {
+      if (!isSupabaseConfigured || !night || document.visibilityState !== 'visible') {
         setPhotos([])
         setHasMore(false)
         setNextCursor(null)
@@ -216,68 +224,85 @@ function GalleryApp() {
         setLoadingMore(true)
         setLoadingMoreError('')
       } else {
-        loadingMoreLockRef.current = false
-        setLoading(true)
-        setLoadingMore(false)
-        setLoadingMoreError('')
-        setHasMore(false)
-        setNextCursor(null)
-        setPhotos([])
-        setLoadError('')
+        if (!prepend) {
+          loadingMoreLockRef.current = false
+          setLoading(true)
+          setLoadingMore(false)
+          setLoadingMoreError('')
+          setHasMore(false)
+          setNextCursor(null)
+          setPhotos([])
+          setLoadError('')
+        }
       }
-      let result
+      const path = galleryFeedPath({
+        album: selectedAlbum,
+        night,
+        slot: slot?.slot ?? null,
+        limit: PAGE_SIZE,
+        before: beforeTimestamp === null
+          ? null
+          : { timestamp: beforeTimestamp, id: beforePhotoId },
+        after: afterTimestamp === null
+          ? null
+          : { timestamp: afterTimestamp, id: afterPhotoId },
+      })
       try {
-        result = await supabase.rpc('gallery_photos', {
-          album_id_input: selectedAlbum,
-          night_key_input: night,
-          slot_start_input: slot?.slot_start || null,
-          slot_end_input: slot?.slot_end || null,
-          before_timestamp_input: beforeTimestamp,
-          before_photo_id_input: beforePhotoId,
-          limit_input: PAGE_SIZE,
-          after_timestamp_input: null,
-          after_photo_id_input: null,
+        const cached = feedCacheRef.current.get(path)
+        const result = await fetchCachedJson(path, cached?.etag || '')
+        const payload = result.notModified ? cached?.data : result.data
+        if (!payload || !Array.isArray(payload.photos) || !Array.isArray(payload.slots)) {
+          throw new Error('The gallery feed returned an invalid response.')
+        }
+        if (!result.notModified) {
+          feedCacheRef.current.set(path, { etag: result.etag, data: payload })
+          if (feedCacheRef.current.size > 100) {
+            feedCacheRef.current.delete(feedCacheRef.current.keys().next().value)
+          }
+        }
+        if (requestId !== pageRequestId.current) return
+        const hiddenIds = new Set(payload.hiddenIds || [])
+        const rows = payload.photos
+          .filter((photo) => !hiddenIds.has(photo.id))
+          .map(normalizePhotoRow)
+        setSlots(mapGallerySlots(payload.slots))
+        setPhotos((current) => {
+          const visibleCurrent = current.filter((photo) => !hiddenIds.has(photo.id))
+          if (prepend) return mergePhotoPages(visibleCurrent, rows)
+          return append ? [...visibleCurrent, ...rows] : rows
         })
+        if (!append && !prepend) {
+          setActivePhoto((current) =>
+            current && !rows.some((photo) => photo.id === current.id) ? null : current,
+          )
+        }
+        if (!prepend) {
+          const lastPhoto = rows[rows.length - 1]
+          setNextCursor((current) =>
+            lastPhoto
+              ? prepend ? current : { timestamp: lastPhoto.timestamp, id: lastPhoto.id }
+              : append ? current : null,
+          )
+          if (!prepend) setHasMore(rows.length === PAGE_SIZE)
+        }
+        setSelectedIds((current) =>
+          current.filter(
+            (id) => !hiddenIds.has(id) && !rows.some((photo) => photo.id === id && photo.is_free),
+          ),
+        )
+        setLoadError('')
+        setLoading(false)
+        setLoadingMore(false)
       } catch (error) {
         if (requestId !== pageRequestId.current) return
         const message = `Could not load photos: ${error.message || 'Unknown error'}`
         if (append) setLoadingMoreError(message)
-        else setLoadError(message)
+        else if (!prepend) setLoadError(message)
         setConnectionStatus('offline')
         setLoading(false)
         setLoadingMore(false)
         return
       }
-      const { data, error } = result
-      if (requestId !== pageRequestId.current) return
-      if (error) {
-        const message = `Could not load photos: ${error.message || 'Unknown error'}`
-        if (append) setLoadingMoreError(message)
-        else setLoadError(message)
-        setConnectionStatus('offline')
-        setLoading(false)
-        setLoadingMore(false)
-        return
-      }
-
-      const rows = (data || []).map(normalizePhotoRow)
-      setPhotos((current) => (append ? [...current, ...rows] : rows))
-      if (!append) {
-        setActivePhoto((current) =>
-          current && !rows.some((photo) => photo.id === current.id) ? null : current,
-        )
-      }
-      const lastPhoto = rows[rows.length - 1]
-      setNextCursor((current) =>
-        lastPhoto ? { timestamp: lastPhoto.timestamp, id: lastPhoto.id } : append ? current : null,
-      )
-      setHasMore(rows.length === PAGE_SIZE)
-      setSelectedIds((current) =>
-        current.filter((id) => !rows.some((photo) => photo.id === id && photo.is_free)),
-      )
-      setLoadError('')
-      setLoading(false)
-      setLoadingMore(false)
     },
     [activeNight, activeSlot, selectedAlbum],
   )
@@ -314,7 +339,21 @@ function GalleryApp() {
 
   useEffect(() => {
     let active = true
-    if (!isSupabaseConfigured || !supabase) {
+    let timeout = null
+    let controller = null
+    let pollRequestId = 0
+    let intervalMs = 17500
+    let initialized = false
+    const resetAlbumBootstrap = () => {
+      bootstrapEtagRef.current = ''
+      bootstrapDataRef.current = null
+      latestPhotoRef.current = null
+      feedCacheRef.current.clear()
+      initialized = false
+    }
+
+    resetAlbumBootstrap()
+    if (!isSupabaseConfigured) {
       setLoadError(
         'Gallery is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to connect Supabase.',
       )
@@ -323,83 +362,149 @@ function GalleryApp() {
       return undefined
     }
 
-    const loadGallery = async () => {
-      const [nightsResult, clockResult, pricingResult] = await Promise.all([
-        supabase.rpc('gallery_nights', { album_id_input: selectedAlbum }),
-        supabase.rpc('gallery_server_now'),
-        supabase
-  .from('gallery_state')
-  .select('first_photo_cents,extra_photo_cents,tip_options_cents,currency')
-  .eq('id', 1)
-  .maybeSingle()
-      ])
-      if (!active) return
-      if (nightsResult.error) {
-        throw new Error(
-          `Could not load gallery nights: ${nightsResult.error.message}. Apply the latest gallery migration.`,
-        )
+    const applyBootstrap = (payload) => {
+      if (!Array.isArray(payload.nights) || !Array.isArray(payload.slots)) {
+        throw new Error('The gallery bootstrap returned invalid navigation data.')
       }
-      if (clockResult.error) {
-        throw new Error(
-          `Could not read the gallery server clock: ${clockResult.error.message}. Apply the latest gallery migration.`,
-        )
-      }
-      const loadedNights = nightsResult.data || []
+      const loadedNights = payload.nights
       setNights(loadedNights)
       setActiveNight((current) =>
         loadedNights.some((night) => night.night_key === current)
           ? current
           : loadedNights[0]?.night_key || '',
       )
-      const serverNow = parseTimestamp(clockResult.data)
+      const currentNight = galleryViewRef.current.activeNight
+      if (!currentNight || currentNight === loadedNights[0]?.night_key) {
+        setSlots(mapGallerySlots(payload.slots))
+      }
+      if (currentNight && !loadedNights.some((night) => night.night_key === currentNight)) {
+        setActiveSlot(null)
+        setActivePhoto(null)
+      }
+      const serverNow = parseTimestamp(payload.serverNow)
       if (Number.isFinite(serverNow)) setServerOffsetMs(serverNow - Date.now())
-
-      if (pricingResult.error) {
-        if (isMissingPricingColumns(pricingResult.error)) {
-          setSchemaNotice(
-            'Server-side photo pricing is not enabled yet. Apply the latest Supabase migration before checkout.',
-          )
-          setPricingConfigured(false)
-        } else {
-          throw pricingResult.error
-        }
+      const pricingData = hasPricingSettings(payload.pricing) ? payload.pricing : null
+      const firstPrice = Number(pricingData?.first_photo_cents)
+      const extraPrice = Number(pricingData?.extra_photo_cents)
+      const configuredTips = pricingData?.tip_options_cents
+      const validTips =
+        Array.isArray(configuredTips) &&
+        configuredTips.length === TIP_OPTIONS_CENTS.length &&
+        configuredTips.every((tip, index) => tip === TIP_OPTIONS_CENTS[index])
+      const validPricing =
+        Number.isSafeInteger(firstPrice) &&
+        firstPrice > 0 &&
+        Number.isSafeInteger(extraPrice) &&
+        extraPrice >= 0 &&
+        validTips &&
+        pricingData?.currency === 'EUR'
+      setPricingConfigured(Boolean(validPricing))
+      if (validPricing) {
+        setSchemaNotice('')
+        setFirstPhotoCents(firstPrice)
+        setExtraPhotoCents(extraPrice)
+        setTipOptionsCents(configuredTips)
+        setCurrency('EUR')
+        setTipCents((current) => (isAllowedTip(current, configuredTips) ? current : 0))
       } else {
-        const pricingData = hasPricingSettings(pricingResult.data) ? pricingResult.data : null
-        const firstPrice = Number(pricingData?.first_photo_cents)
-        const extraPrice = Number(pricingData?.extra_photo_cents)
-        const configuredTips = pricingData?.tip_options_cents
-        const validTips =
-          Array.isArray(configuredTips) &&
-          configuredTips.length === TIP_OPTIONS_CENTS.length &&
-          configuredTips.every((tip, index) => tip === TIP_OPTIONS_CENTS[index])
-        const validPricing =
-          Number.isSafeInteger(firstPrice) &&
-          firstPrice > 0 &&
-          Number.isSafeInteger(extraPrice) &&
-          extraPrice >= 0 &&
-          validTips &&
-          pricingData?.currency === 'EUR'
-        setPricingConfigured(Boolean(validPricing))
-        if (validPricing) {
-          setFirstPhotoCents(firstPrice)
-          setExtraPhotoCents(extraPrice)
-          setTipOptionsCents(configuredTips)
-          setCurrency('EUR')
-          setTipCents((current) => (isAllowedTip(current, configuredTips) ? current : 0))
+        setSchemaNotice('Server-side photo pricing is unavailable. Secure checkout is disabled.')
+      }
+      if (Array.isArray(payload.hiddenIds)) {
+        const hiddenIds = new Set(payload.hiddenIds)
+        if (hiddenIds.size) {
+          setPhotos((current) => current.filter((photo) => !hiddenIds.has(photo.id)))
+          setSelectedIds((current) => current.filter((id) => !hiddenIds.has(id)))
+          setActivePhoto((current) => current && hiddenIds.has(current.id) ? null : current)
         }
       }
-      setConnectionStatus('connecting')
+      setConnectionStatus('live')
       setLoadError('')
     }
 
-    loadGallery().catch((error) => {
-      if (!active) return
-      setLoadError(`Could not load gallery: ${error.message || 'Unknown error'}`)
-      setConnectionStatus('offline')
-      setLoading(false)
-    })
+    const scheduleNext = () => {
+      if (!active || document.visibilityState !== 'visible') return
+      const jitteredDelay = intervalMs * (0.7 + Math.random() * 0.6)
+      timeout = window.setTimeout(() => void pollBootstrap(), jitteredDelay)
+    }
+    const pollBootstrap = async () => {
+      if (!active || document.visibilityState !== 'visible') return
+      const requestId = ++pollRequestId
+      controller = new AbortController()
+      const startedAt = performance.now()
+      try {
+        const result = await fetchCachedJson(
+          galleryBootstrapPath(selectedAlbum),
+          bootstrapEtagRef.current,
+          controller.signal,
+        )
+        if (!active) return
+        if (!result.notModified) {
+          const previousLatest = latestPhotoRef.current
+          bootstrapEtagRef.current = result.etag
+          bootstrapDataRef.current = result.data
+          applyBootstrap(result.data)
+          latestPhotoRef.current = result.data.latest || null
+          const currentView = galleryViewRef.current
+          const newestNight = result.data.nights[0]?.night_key || ''
+          if (
+            initialized &&
+            previousLatest &&
+            result.data.latest &&
+            (previousLatest.timestamp !== result.data.latest.timestamp ||
+              previousLatest.id !== result.data.latest.id) &&
+            currentView.activeNight === newestNight
+          ) {
+            const newestLoadedPhoto = photosRef.current[0]
+            if (newestLoadedPhoto) {
+              void loadPhotoPage({
+                prepend: true,
+                afterTimestamp: newestLoadedPhoto.timestamp,
+                afterPhotoId: newestLoadedPhoto.id,
+                night: currentView.activeNight,
+                slot: currentView.activeSlot,
+              })
+            }
+          }
+        }
+        if (!initialized) {
+          initialized = true
+          setLoading(false)
+        }
+        setConnectionStatus('live')
+        const duration = performance.now() - startedAt
+        intervalMs = duration > 4000 ? Math.min(60000, intervalMs * 1.5) : 17500
+        setLoadError('')
+      } catch (error) {
+        if (!active || error?.name === 'AbortError') return
+        intervalMs = Math.min(60000, intervalMs * 1.5)
+        setConnectionStatus('offline')
+        setLoadError(`Could not refresh gallery: ${error.message || 'Unknown error'}`)
+        if (!initialized) setLoading(false)
+      } finally {
+        if (requestId === pollRequestId) {
+          controller = null
+          scheduleNext()
+        }
+      }
+    }
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        pollRequestId += 1
+        if (timeout !== null) window.clearTimeout(timeout)
+        timeout = null
+        controller?.abort()
+      } else {
+        void pollBootstrap()
+      }
+    }
+
+    if (document.visibilityState === 'visible') void pollBootstrap()
+    document.addEventListener('visibilitychange', onVisibilityChange)
     return () => {
       active = false
+      if (timeout !== null) window.clearTimeout(timeout)
+      controller?.abort()
+      document.removeEventListener('visibilitychange', onVisibilityChange)
     }
   }, [selectedAlbum])
 
@@ -509,34 +614,6 @@ function GalleryApp() {
       active = false
       window.clearInterval(interval)
       document.removeEventListener('visibilitychange', refreshIfVisible)
-    }
-  }, [activeNight, selectedAlbum])
-
-  useEffect(() => {
-    if (!activeNight || !supabase) {
-      setSlots([])
-      return undefined
-    }
-    let active = true
-    const loadSlots = async () => {
-      try {
-        const { data, error } = await supabase.rpc('gallery_slots', {
-          album_id_input: selectedAlbum,
-          night_key_input: activeNight,
-        })
-        if (!active) return
-        if (error) {
-          setLoadError(`Could not load time slots: ${error.message}`)
-          return
-        }
-        setSlots(mapGallerySlots(data || []))
-      } catch (error) {
-        if (active) setLoadError(`Could not load time slots: ${error.message}`)
-      }
-    }
-    loadSlots()
-    return () => {
-      active = false
     }
   }, [activeNight, selectedAlbum])
 
