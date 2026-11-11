@@ -36,7 +36,7 @@ The bridge asks Pillow to decode JPEGs at a reduced draft size, then resizes pre
 
 - The camera bridge supports QR-driven album sessions. Scan a valid gallery card that points to `https://your-gallery.example/?album=042`; the bridge accepts only URLs from the configured `GALLERY_BASE_URL` host and path and rejects missing, duplicate, malformed, or malicious `album` parameters.
 - The bridge keeps a current session album in memory and uploads subsequent photos to that album until another trusted QR card is scanned. The active album is stored in the `photos.album_id` column; legacy rows default to `general`.
-- Building a QR card is simple: generate a URL like `https://your-gallery.example/?album=042`, then print it with the helper in [`tools/qr_cards/generate_album_cards.py`](../tools/qr_cards/generate_album_cards.py). The script renders A4 sheets with QR labels that can be printed and handed to the camera operator.
+- Generate and print QR cards with [`tools/qr_cards/generate_album_cards.py`](../tools/qr_cards/generate_album_cards.py). By default it creates one random 8-12 character album ID; use `--count N` for multiple new albums (the PDF spans multiple A4 pages when needed) or `--album-ids general,042,043` to print cards for existing IDs. Existing album IDs such as `042` remain valid.
 - The bridge ignores ambiguous QR cards (`__conflict__` when multiple albums are detected) and waits for a trusted single-album scan before changing the active album. A fallback `CAMERA_DEFAULT_ALBUM` remains optional but should be treated as a safe default only for a single known collection.
 
 ## Capture timestamps

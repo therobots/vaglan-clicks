@@ -145,12 +145,13 @@ await test('Read public gallery server clock', 'ALLOW', () =>
   supabase.rpc('gallery_server_now'),
 )
 const currentNight = nightsResult?.data?.[0]?.night_key
+let photosResult = { data: [] }
 if (currentNight) {
   const slotsResult = await test('Read public gallery time slots', 'ALLOW', () =>
     supabase.rpc('gallery_slots', { album_id_input: 'general', night_key_input: currentNight }),
   )
   const firstSlot = slotsResult?.data?.[0]
-  var photosResult = await test('Read public paginated gallery photos via RPC', 'ALLOW', () =>
+  photosResult = await test('Read public paginated gallery photos via RPC', 'ALLOW', () =>
     supabase.rpc('gallery_photos', {
       album_id_input: 'general',
       night_key_input: currentNight,
@@ -279,15 +280,15 @@ if (unavailablePhotoId) {
             : 'The supplied photo is public and was not submitted for removal.',
         })
       } else {
-      await test(
-        'Reject hidden or expired photo-removal request',
-        'DENY',
-        () => supabase.functions.invoke('request-photo-removal', {
-          body: { photoId: unavailablePhotoId, reason: '', contact: '' },
-        }),
-        () => false,
-        (error) => Number(error?.context?.status ?? error?.status ?? error?.statusCode) === 404,
-      )
+        await test(
+          'Reject hidden or expired photo-removal request',
+          'DENY',
+          () => supabase.functions.invoke('request-photo-removal', {
+            body: { photoId: unavailablePhotoId, reason: '', contact: '' },
+          }),
+          () => false,
+          (error) => Number(error?.context?.status ?? error?.status ?? error?.statusCode) === 404,
+        )
       }
     }
   }
