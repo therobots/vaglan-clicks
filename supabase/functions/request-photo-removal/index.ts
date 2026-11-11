@@ -72,18 +72,6 @@ Deno.serve(async (request) => {
       return respond({ error: "Request limit reached. Please try again later." }, 429);
     }
 
-    try {
-      const { error: broadcastError } = await client.channel("public:gallery-removals").send({
-        type: "broadcast",
-        event: "photo-hidden",
-        payload: { photoId: payload.photoId },
-      });
-      if (broadcastError) {
-        console.error("The removal succeeded but the live gallery broadcast failed:", broadcastError);
-      }
-    } catch (broadcastError) {
-      console.error("The removal succeeded but the live gallery broadcast failed:", broadcastError);
-    }
     return respond({ success: true, requestId: result.request_id });
   } catch (error) {
     console.error("Photo-removal request failed:", error);

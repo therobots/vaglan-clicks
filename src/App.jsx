@@ -8,7 +8,7 @@ import TimeFilterBar from '@/components/gallery/TimeFilterBar'
 import GalleryTabs from '@/components/gallery/GalleryTabs'
 import PhotoRemovalDialog from '@/components/gallery/PhotoRemovalDialog'
 import PhotoCard from '@/components/gallery/PhotoCard'
-import { isSupabaseConfigured, supabase } from './supabaseClient'
+import { isSupabaseConfigured } from '@/lib/supabaseConfig'
 import {
   fetchCachedJson,
   galleryBootstrapPath,
@@ -35,7 +35,6 @@ import {
 } from '@/lib/timeBuckets'
 import {
   DEFAULT_ALBUM_ID,
-  normalizeAlbumId,
   readAlbumFromSearch,
   validateAlbumId,
 } from '@/lib/album'
@@ -91,7 +90,7 @@ const groupPhotosByTime = (items) => {
 function GalleryApp() {
   const language = useGalleryLanguage()
   const text = galleryText[language]
-  const [selectedAlbum, setSelectedAlbum] = useState(() => {
+  const [selectedAlbum] = useState(() => {
     const album = readAlbumFromSearch(window.location.search || '', DEFAULT_ALBUM_ID)
     return validateAlbumId(album)
   })
@@ -139,23 +138,12 @@ function GalleryApp() {
   const photosRef = useRef(photos)
   const galleryViewRef = useRef({ selectedAlbum, activeNight, activeSlot })
   galleryViewRef.current = { selectedAlbum, activeNight, activeSlot }
-  const lastRealtimeMetadataRefreshRef = useRef(0)
   const loadMoreSentinelRef = useRef(null)
   const loadingMoreLockRef = useRef(false)
   const bootstrapEtagRef = useRef('')
   const bootstrapDataRef = useRef(null)
   const latestPhotoRef = useRef(null)
   const feedCacheRef = useRef(new Map())
-
-  const setAlbumSelection = useCallback((nextValue) => {
-    const safeAlbum = normalizeAlbumId(nextValue, DEFAULT_ALBUM_ID)
-    setSelectedAlbum(safeAlbum)
-    if (typeof window !== 'undefined') {
-      const nextUrl = new URL(window.location.href)
-      nextUrl.searchParams.set('album', safeAlbum)
-      window.history.replaceState({}, '', nextUrl)
-    }
-  }, [])
 
   useEffect(() => {
     photosRef.current = photos
@@ -515,259 +503,8 @@ function GalleryApp() {
   }, [])
 
   useEffect(() => {
-    if (!supabase) return undefined
-    const channel = supabase
-      .channel('public:gallery-removals')
-      .on('broadcast', { event: 'photo-hidden' }, ({ payload }) => {
-        if (typeof payload?.photoId === 'string') hidePhoto(payload.photoId)
-      })
-      .on('broadcast', { event: 'photo-restored' }, () => {
-        void loadPhotoPage({ append: false })
-      })
-      .subscribe()
-    return () => {
-      void supabase.removeChannel(channel)
-    }
-  }, [hidePhoto, loadPhotoPage])
-
-  useEffect(() => {
-    if (!supabase) return undefined
-    let active = true
-    const reconcileVisibility = async () => {
-      if (document.visibilityState !== 'visible') return
-      const ids = photosRef.current.map((photo) => photo.id).filter(Boolean)
-      if (!ids.length) return
-      for (let offset = 0; offset < ids.length; offset += 100) {
-        const chunk = ids.slice(offset, offset + 100)
-        const { data, error } = await supabase
-          .from('photos')
-          .select('id')
-          .in('id', chunk)
-          .eq('album_id', selectedAlbum)
-        if (!active) return
-        if (error) {
-          setLoadError(`Could not refresh photo visibility: ${error.message}`)
-          return
-        }
-        const visibleIds = new Set((data || []).map((photo) => photo.id))
-        for (const photoId of chunk) {
-          if (!visibleIds.has(photoId)) hidePhoto(photoId)
-        }
-      }
-    }
-    const reconcileIfVisible = () => {
-      if (document.visibilityState !== 'visible') return
-      reconcileVisibility().catch((error) => {
-        if (active) setLoadError(`Could not refresh photo visibility: ${error.message}`)
-      })
-    }
-    const interval = window.setInterval(reconcileIfVisible, 90000)
-    document.addEventListener('visibilitychange', reconcileIfVisible)
-    return () => {
-      active = false
-      window.clearInterval(interval)
-      document.removeEventListener('visibilitychange', reconcileIfVisible)
-    }
-  }, [hidePhoto, selectedAlbum])
-
-  useEffect(() => {
-    if (!supabase) return undefined
-    let active = true
-    const refreshNightAvailability = async () => {
-      if (document.visibilityState !== 'visible') return
-      const [nightsResult, clockResult] = await Promise.all([
-        supabase.rpc('gallery_nights', { album_id_input: selectedAlbum }),
-        supabase.rpc('gallery_server_now'),
-      ])
-      if (!active) return
-      if (nightsResult.error) {
-        setLoadError(`Could not refresh gallery nights: ${nightsResult.error.message}`)
-        return
-      }
-      const refreshedNights = nightsResult.data || []
-      setNights(refreshedNights)
-      if (!refreshedNights.some((night) => night.night_key === activeNight)) {
-        setActiveSlot(null)
-        setActivePhoto(null)
-      }
-      setActiveNight((current) =>
-        refreshedNights.some((night) => night.night_key === current)
-          ? current
-          : refreshedNights[0]?.night_key || '',
-      )
-      if (clockResult.error) {
-        setLoadError(`Could not refresh gallery server time: ${clockResult.error.message}`)
-        return
-      }
-      const serverNow = parseTimestamp(clockResult.data)
-      if (Number.isFinite(serverNow)) setServerOffsetMs(serverNow - Date.now())
-    }
-    const refreshIfVisible = () => {
-      if (document.visibilityState !== 'visible') return
-      refreshNightAvailability().catch((error) => {
-        if (active) setLoadError(`Could not refresh gallery nights: ${error.message}`)
-      })
-    }
-    const interval = window.setInterval(refreshIfVisible, 60000)
-    document.addEventListener('visibilitychange', refreshIfVisible)
-    return () => {
-      active = false
-      window.clearInterval(interval)
-      document.removeEventListener('visibilitychange', refreshIfVisible)
-    }
-  }, [activeNight, selectedAlbum])
-
-  useEffect(() => {
     loadPhotoPage()
   }, [loadPhotoPage])
-
-  useEffect(() => {
-    if (!supabase) return undefined
-    let active = true
-    let photoRefreshTimeout = null
-    let metadataRefreshTimeout = null
-    let photoRefreshPending = false
-
-    const mergeCurrentPage = async () => {
-      const { selectedAlbum: album, activeNight: night, activeSlot: slot } = galleryViewRef.current
-      if (!night) return
-      const { data, error } = await supabase.rpc('gallery_photos', {
-        album_id_input: album,
-        night_key_input: night,
-        slot_start_input: slot?.slot_start || null,
-        slot_end_input: slot?.slot_end || null,
-        before_timestamp_input: null,
-        before_photo_id_input: null,
-        limit_input: PAGE_SIZE,
-        after_timestamp_input: null,
-        after_photo_id_input: null,
-      })
-      if (!active) return
-      if (error) {
-        setLoadError(`Could not refresh live photos: ${error.message}`)
-        return
-      }
-      const rows = (data || []).map(normalizePhotoRow)
-      const currentWasEmpty = photosRef.current.length === 0
-      setPhotos((current) => mergePhotoPages(current, rows))
-      if (currentWasEmpty) {
-        const lastPhoto = rows[rows.length - 1]
-        setNextCursor(lastPhoto
-          ? { timestamp: lastPhoto.timestamp, id: lastPhoto.id }
-          : null)
-      }
-    }
-
-    const refreshNightAndSlots = async () => {
-      const { selectedAlbum: album, activeNight: currentNight, activeSlot: currentSlot } =
-        galleryViewRef.current
-      const { data: nightRows, error: nightsError } = await supabase.rpc(
-        'gallery_nights',
-        { album_id_input: album },
-      )
-      if (!active) return
-      if (nightsError) throw nightsError
-      const refreshedNights = nightRows || []
-      setNights(refreshedNights)
-      const nextNight = refreshedNights.some((night) => night.night_key === currentNight)
-        ? currentNight
-        : refreshedNights[0]?.night_key || ''
-      if (nextNight !== currentNight) {
-        setActiveNight(nextNight)
-        setActiveSlot(null)
-        setActivePhoto(null)
-      }
-      if (!nextNight) {
-        setSlots([])
-        return
-      }
-      const { data: slotRows, error: slotsError } = await supabase.rpc(
-        'gallery_slots',
-        { album_id_input: album, night_key_input: nextNight },
-      )
-      if (!active) return
-      if (slotsError) throw slotsError
-      const mappedSlots = mapGallerySlots(slotRows || [])
-      setSlots(mappedSlots)
-      if (
-        currentSlot &&
-        !mappedSlots.some((slot) =>
-          slot.slot_start === currentSlot.slot_start && slot.slot_end === currentSlot.slot_end,
-        )
-      ) {
-        setActiveSlot(null)
-      }
-    }
-
-    const queueMetadataRefresh = () => {
-      if (metadataRefreshTimeout !== null) return
-      const elapsed = Date.now() - lastRealtimeMetadataRefreshRef.current
-      metadataRefreshTimeout = window.setTimeout(() => {
-        metadataRefreshTimeout = null
-        if (!active) return
-        lastRealtimeMetadataRefreshRef.current = Date.now()
-        refreshNightAndSlots().catch((error) => {
-          if (active) setLoadError(`Could not refresh live gallery filters: ${error.message}`)
-        })
-      }, Math.max(0, 30000 - elapsed))
-    }
-
-    const queuePhotoRefresh = () => {
-      photoRefreshPending = true
-      if (photoRefreshTimeout !== null) window.clearTimeout(photoRefreshTimeout)
-      photoRefreshTimeout = window.setTimeout(() => {
-        photoRefreshTimeout = null
-        if (!active || !photoRefreshPending) return
-        photoRefreshPending = false
-        mergeCurrentPage().catch((error) => {
-          if (active) setLoadError(`Could not refresh live photos: ${error.message}`)
-        })
-      }, 1500)
-    }
-
-    const channel = supabase
-      .channel('public-photos-feed')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'photos' },
-        (payload) => {
-          if (!active) return
-          /** @type {{ id?: string, album_id?: string }} */
-          const oldPhoto = payload.old || {}
-          /** @type {{ id?: string, album_id?: string }} */
-          const newPhoto = payload.new || {}
-          const { selectedAlbum: album } = galleryViewRef.current
-          const affectsAlbum = oldPhoto?.album_id === album || newPhoto?.album_id === album
-          if (!affectsAlbum) return
-
-          if (payload.eventType === 'DELETE') {
-            if (oldPhoto?.id) hidePhoto(oldPhoto.id)
-            queueMetadataRefresh()
-            return
-          }
-
-          if (
-            payload.eventType === 'UPDATE' &&
-            oldPhoto?.album_id === album &&
-            newPhoto?.album_id !== album &&
-            oldPhoto?.id
-          ) {
-            hidePhoto(oldPhoto.id)
-          }
-          if (newPhoto?.album_id === album) queuePhotoRefresh()
-          if (payload.eventType === 'INSERT') queueMetadataRefresh()
-        },
-      )
-      .subscribe((status) => {
-        if (active) setConnectionStatus(status === 'SUBSCRIBED' ? 'live' : 'offline')
-      })
-    return () => {
-      active = false
-      if (photoRefreshTimeout !== null) window.clearTimeout(photoRefreshTimeout)
-      if (metadataRefreshTimeout !== null) window.clearTimeout(metadataRefreshTimeout)
-      void supabase.removeChannel(channel)
-    }
-  }, [hidePhoto, selectedAlbum])
 
   const photoGroups = useMemo(() => groupPhotosByTime(photos), [photos])
   const selectedCount = selectedIds.length
@@ -793,15 +530,14 @@ function GalleryApp() {
   }, [])
 
   const downloadFreePhoto = async (photo) => {
-    if (!supabase || !photo?.is_free) return
+    if (!isSupabaseConfigured || !photo?.is_free) return
     setDownloadingPhotoId(photo.id)
     setDownloadError('')
     try {
-      const { data, error } = await supabase.functions.invoke('gallery-admin', {
-        body: { action: 'download-free', photoId: photo.id },
+      const data = await invokeEdgeFunction('gallery-admin', {
+        action: 'download-free',
+        photoId: photo.id,
       })
-      if (error) throw error
-      if (data?.error) throw new Error(data.error)
       if (!data?.url) throw new Error('The secure download link was not returned.')
 
       const anchor = document.createElement('a')
@@ -819,15 +555,15 @@ function GalleryApp() {
   }
 
   const requestPhotoRemoval = async ({ reason, contact }) => {
-    if (!supabase || !removalPhoto) return false
+    if (!isSupabaseConfigured || !removalPhoto) return false
     setRemovalBusy(true)
     setRemovalError('')
     try {
-      const { data, error } = await supabase.functions.invoke('request-photo-removal', {
-        body: { photoId: removalPhoto.id, reason, contact },
+      await invokeEdgeFunction('request-photo-removal', {
+        photoId: removalPhoto.id,
+        reason,
+        contact,
       })
-      if (error) throw error
-      if (data?.error) throw new Error(data.error)
       hidePhoto(removalPhoto.id)
       setRemovalPhoto(null)
       setRemovalNotice(text.removalSent)
@@ -851,15 +587,14 @@ function GalleryApp() {
   }
 
   const startCheckout = async () => {
-    if (!supabase || selectedIds.length === 0) return
+    if (!isSupabaseConfigured || selectedIds.length === 0) return
     setCheckoutBusy(true)
     setCheckoutError('')
     try {
-      const { data, error } = await supabase.functions.invoke('create-viva-order', {
-        body: { photoIds: selectedIds, tipCents: safeTipCents },
+      const data = await invokeEdgeFunction('create-viva-order', {
+        photoIds: selectedIds,
+        tipCents: safeTipCents,
       })
-      if (error) throw error
-      if (data?.error) throw new Error(data.error)
       let checkoutUrl
       try {
         checkoutUrl = new URL(data?.url)
@@ -918,15 +653,6 @@ function GalleryApp() {
             {schemaNotice}
           </p>
         )}
-        <div className="flex items-center justify-between border-b border-gray-100 px-3 py-2 text-[11px] uppercase tracking-[0.12em] text-neutral-500">
-          <span>Album</span>
-          <input
-            aria-label="Album ID"
-            value={selectedAlbum}
-            onChange={(event) => setAlbumSelection(event.target.value)}
-            className="w-28 rounded-full border border-neutral-200 bg-neutral-50 px-2 py-1 text-right font-semibold text-neutral-700 outline-none ring-0 focus:border-neutral-400"
-          />
-        </div>
         {nights.length > 1 && (
           <nav
             aria-label="Choose gallery night"

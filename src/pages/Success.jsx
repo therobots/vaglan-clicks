@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { CheckCircle2, Download, LoaderCircle } from "lucide-react";
-import { supabase } from "@/supabaseClient";
+import { isSupabaseConfigured } from "@/lib/supabaseConfig";
+import { invokeEdgeFunction } from "@/lib/galleryApi";
 import { cacheCartSelection } from "@/lib/orderSession";
 import { edgeFunctionErrorMessage } from "@/lib/edgeFunctionError";
 import { applyDocumentLanguage, galleryText, useGalleryLanguage } from "@/lib/galleryLanguage";
@@ -29,7 +30,7 @@ export default function Success({ orderToken = "" }) {
     let polls = 0;
 
     const loadDownloads = async () => {
-      if (!supabase) {
+      if (!isSupabaseConfigured) {
         setStatus("error");
         setError("Secure downloads are not configured for this gallery.");
         return;
@@ -41,11 +42,10 @@ export default function Success({ orderToken = "" }) {
       }
 
       try {
-        const { data, error: invokeError } = await supabase.functions.invoke("order-downloads", {
-          body: sessionId ? { sessionId } : { token },
-        });
-        if (invokeError) throw invokeError;
-        if (data?.error) throw new Error(data.error);
+        const data = await invokeEdgeFunction(
+          "order-downloads",
+          sessionId ? { sessionId } : { token },
+        );
         if (!active) return;
 
         if (data?.status === "paid" && Array.isArray(data.items)) {

@@ -457,25 +457,6 @@ Deno.serve(async (request) => {
       });
       if (error) throw error;
       if (!restored) return respond({ error: "The hidden photo can no longer be restored." }, 409);
-      const { data: requestRows, error: listError } = await client.rpc(
-        "admin_list_photo_removal_requests",
-      );
-      if (listError) throw listError;
-      const matched = (requestRows || []).find((item: { request_id: string }) =>
-        item.request_id === payload.requestId
-      );
-      if (matched?.photo_id) {
-        try {
-          const { error: broadcastError } = await client.channel("public:gallery-removals").send({
-            type: "broadcast",
-            event: "photo-restored",
-            payload: { photoId: matched.photo_id },
-          });
-          if (broadcastError) console.error("Photo restoration broadcast failed:", broadcastError);
-        } catch (broadcastError) {
-          console.error("Photo restoration broadcast failed:", broadcastError);
-        }
-      }
       return respond({ success: true });
     }
 
