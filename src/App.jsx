@@ -235,6 +235,8 @@ function GalleryApp() {
           before_timestamp_input: beforeTimestamp,
           before_photo_id_input: beforePhotoId,
           limit_input: PAGE_SIZE,
+          after_timestamp_input: null,
+          after_photo_id_input: null,
         })
       } catch (error) {
         if (requestId !== pageRequestId.current) return
@@ -560,6 +562,8 @@ function GalleryApp() {
         before_timestamp_input: null,
         before_photo_id_input: null,
         limit_input: PAGE_SIZE,
+        after_timestamp_input: null,
+        after_photo_id_input: null,
       })
       if (!active) return
       if (error) {

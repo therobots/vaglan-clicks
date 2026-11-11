@@ -26,6 +26,22 @@ The two-bucket design keeps full-resolution originals in the private `private-or
 
 The order-thumbnail migration is additive. If rolling back the application or Edge Function, the old clients can ignore the additional thumbnail field and the column/trigger can remain in place. Do not drop the column or trigger unless `get_photo_order_for_download` has first been restored to a definition that no longer reads `thumbnail_url`.
 
+Apply `20261111151200_gallery_feed_indexes_and_cleanup.sql` after the order-thumbnail migration. It backfills and maintains Athens capture/night keys, adds the album/night feed index, and recreates the album-scoped gallery RPCs with an optional `after` cursor while retaining `before` pagination. It also removes the obsolete album-only index and moves expired operational-row cleanup out of gallery-admin login and download-rate-limit requests. The migration does not enable photo purging or alter gallery retention.
+
+After applying the migration, enable `pg_cron` in the Supabase Dashboard and schedule the bounded operational cleanup separately from the dry-run photo purge:
+
+```sql
+select cron.schedule(
+  'vaglan-gallery-operational-cleanup',
+  '*/5 * * * *',
+  $$select private.cleanup_gallery_operational_data();$$
+);
+```
+
+Each run removes at most 10,000 expired attempt/session/event rows per table and expires at most 1,000 pending orders older than 35 minutes. Repeated runs drain larger backlogs without putting cleanup work on login or download requests. The function returns per-table counts for manual invocation. Confirm the job is active with `select jobid, schedule, command from cron.job where jobname = 'vaglan-gallery-operational-cleanup';`. To pause it, unschedule its job ID with `select cron.unschedule(JOB_ID);`.
+
+The gallery migration is additive and the RPC's before cursor and return columns are preserved. For a database rollback, first pause the cron job, then restore the prior `gallery_photos` definition and grants from `20261107000000_watermark_baked_flag.sql` before removing the new trigger, columns, and indexes. Prefer restoring the pre-migration database backup if migration effects are uncertain; do not drop the derived columns while the new RPCs or trigger remain installed.
+
 The admin photo list labels rows with `watermark_baked = false` as needing rebuild. Update the laptop bridge to the current code and restart it after deploying this migration, before ingesting more photos.
 
 The hardening migration intentionally revokes direct anonymous/authenticated writes to Storage. The local camera bridge needs the service-role key in its trusted process environment; never put it in frontend configuration. Follow [`INGEST.md`](./INGEST.md) for bridge setup, required UTC timestamps, Athens night grouping, and storage paths.

@@ -194,11 +194,6 @@ Deno.serve(async (request) => {
         request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
         "unknown";
       const cutoff = new Date(Date.now() - loginWindowMs).toISOString();
-      const { error: cleanupError } = await client.rpc("clear_gallery_admin_attempts", {
-        ip_input: null,
-        cutoff,
-      });
-      if (cleanupError) throw cleanupError;
       const { data: count, error: attemptsError } = await client.rpc(
         "count_gallery_admin_attempts",
         { ip_input: ipAddress, cutoff },
