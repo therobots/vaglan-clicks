@@ -141,9 +141,10 @@ function GalleryApp() {
   const loadMoreSentinelRef = useRef(null)
   const loadingMoreLockRef = useRef(false)
   const bootstrapEtagRef = useRef('')
-  const bootstrapDataRef = useRef(null)
   const latestPhotoRef = useRef(null)
   const feedCacheRef = useRef(new Map())
+  const restoredPhotoIdsRef = useRef(new Map())
+  const loadPhotoPageRef = useRef(null)
 
   useEffect(() => {
     photosRef.current = photos
@@ -294,6 +295,7 @@ function GalleryApp() {
     },
     [activeNight, activeSlot, selectedAlbum],
   )
+  loadPhotoPageRef.current = loadPhotoPage
 
   const loadNextPhotoPage = useCallback(async () => {
     if (loadingMoreLockRef.current || !hasMore || !nextCursor) return
@@ -334,9 +336,9 @@ function GalleryApp() {
     let initialized = false
     const resetAlbumBootstrap = () => {
       bootstrapEtagRef.current = ''
-      bootstrapDataRef.current = null
       latestPhotoRef.current = null
       feedCacheRef.current.clear()
+      restoredPhotoIdsRef.current.clear()
       initialized = false
     }
 
@@ -429,13 +431,28 @@ function GalleryApp() {
         if (!result.notModified) {
           const previousLatest = latestPhotoRef.current
           bootstrapEtagRef.current = result.etag
-          bootstrapDataRef.current = result.data
           applyBootstrap(result.data)
           latestPhotoRef.current = result.data.latest || null
           const currentView = galleryViewRef.current
           const newestNight = result.data.nights[0]?.night_key || ''
+          const restoredIds = (result.data.restoredIds || []).filter((id) => {
+            if (restoredPhotoIdsRef.current.has(id)) return false
+            restoredPhotoIdsRef.current.set(id, Date.now())
+            return true
+          })
+          for (const [photoId, seenAt] of restoredPhotoIdsRef.current) {
+            if (Date.now() - seenAt > 2 * 60 * 1000) restoredPhotoIdsRef.current.delete(photoId)
+          }
+          if (initialized && restoredIds.length && currentView.activeNight) {
+            void loadPhotoPageRef.current?.({
+              prepend: true,
+              night: currentView.activeNight,
+              slot: currentView.activeSlot,
+            })
+          }
           if (
             initialized &&
+            restoredIds.length === 0 &&
             previousLatest &&
             result.data.latest &&
             (previousLatest.timestamp !== result.data.latest.timestamp ||
@@ -444,7 +461,7 @@ function GalleryApp() {
           ) {
             const newestLoadedPhoto = photosRef.current[0]
             if (newestLoadedPhoto) {
-              void loadPhotoPage({
+              void loadPhotoPageRef.current?.({
                 prepend: true,
                 afterTimestamp: newestLoadedPhoto.timestamp,
                 afterPhotoId: newestLoadedPhoto.id,

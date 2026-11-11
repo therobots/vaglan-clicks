@@ -61,6 +61,7 @@ test('bootstrap returns cacheable JSON with a strong ETag and supports condition
   const originalUrl = process.env.SUPABASE_URL
   const originalKey = process.env.SUPABASE_ANON_KEY
   const calls = []
+  let clockReads = 0
   process.env.SUPABASE_URL = 'https://example.supabase.co'
   process.env.SUPABASE_ANON_KEY = 'test-anon-key'
   globalThis.fetch = async (input, options) => {
@@ -78,9 +79,16 @@ test('bootstrap returns cacheable JSON with a strong ETag and supports condition
       return Response.json([{ night_key: '2026-11-11' }])
     }
     if (url.pathname.endsWith('/gallery_server_now')) {
-      return Response.json('2026-11-11T12:00:00Z')
+      return Response.json(clockReads++ === 0
+        ? '2026-11-11T12:00:04Z'
+        : '2026-11-11T12:00:24Z')
     }
-    if (url.pathname.endsWith('/gallery_recently_hidden')) return Response.json([])
+    if (url.pathname.endsWith('/gallery_recently_hidden')) {
+      return Response.json([{ photo_id: '00000000-0000-4000-8000-000000000002' }])
+    }
+    if (url.pathname.endsWith('/gallery_recently_restored')) {
+      return Response.json([{ photo_id: '00000000-0000-4000-8000-000000000003' }])
+    }
     if (url.pathname.endsWith('/gallery_slots')) return Response.json([])
     if (url.pathname.endsWith('/gallery_photos')) {
       return Response.json([{ id: '00000000-0000-4000-8000-000000000001', timestamp: 1 }])
@@ -97,6 +105,9 @@ test('bootstrap returns cacheable JSON with a strong ETag and supports condition
     const payload = JSON.parse(response.body)
     assert.equal(payload.nights[0].night_key, '2026-11-11')
     assert.equal(payload.latest.id, '00000000-0000-4000-8000-000000000001')
+    assert.equal(payload.serverNow, '2026-11-11T12:00:00.000Z')
+    assert.deepEqual(payload.hiddenIds, ['00000000-0000-4000-8000-000000000002'])
+    assert.deepEqual(payload.restoredIds, ['00000000-0000-4000-8000-000000000003'])
     assert.ok(calls.every((path) => !path.endsWith('/photos')))
 
     const unchanged = makeResponse()
