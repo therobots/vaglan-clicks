@@ -22,7 +22,9 @@ Review migration SQL against the captured schema, then apply migrations in times
 
 For production, have an authorized operator apply all reviewed active migration files in timestamp order through the Supabase Dashboard SQL Editor or the project's approved migration workflow. The checkout migration adds server-priced EUR orders and payment records; the gallery migration safely backfills missing expiry values to at least 48 hours from migration time. Verify `public.photos` still contains its existing rows and that existing rows have future `expires_at` values after migration.
 
-The two-bucket design keeps full-resolution originals in the private `private-originals` bucket and serves only low-resolution WebP previews and thumbnails with the watermark physically baked into their pixels from the public `public-previews` bucket. `photos.watermark_baked` is the fail-closed marker: public gallery RPCs omit rows until it is true. After applying `20261107000000_watermark_baked_flag.sql`, rebuild legacy rows with the dry-run-first procedure in [`INGEST.md`](./INGEST.md). Legacy objects are not automatically moved or deleted by the migration.
+The two-bucket design keeps full-resolution originals in the private `private-originals` bucket and serves only low-resolution WebP previews and thumbnails with the watermark physically baked into their pixels from the public `public-previews` bucket. `photos.watermark_baked` is the fail-closed marker: public gallery RPCs omit rows until it is true. After applying `20261107000000_watermark_baked_flag.sql`, rebuild legacy rows with the dry-run-first procedure in [`INGEST.md`](./INGEST.md). Apply the later `20261111144000_order_download_thumbnails.sql` migration after it to snapshot thumbnails into order items for the paid-download page; it does not change order eligibility or expose originals. Deploy the updated `order-downloads` function and frontend after applying the migration. Legacy objects are not automatically moved or deleted by the migration.
+
+The order-thumbnail migration is additive. If rolling back the application or Edge Function, the old clients can ignore the additional thumbnail field and the column/trigger can remain in place. Do not drop the column or trigger unless `get_photo_order_for_download` has first been restored to a definition that no longer reads `thumbnail_url`.
 
 The admin photo list labels rows with `watermark_baked = false` as needing rebuild. Update the laptop bridge to the current code and restart it after deploying this migration, before ingesting more photos.
 
@@ -184,6 +186,8 @@ npx supabase functions deploy create-viva-order
 npx supabase functions deploy order-downloads
 npx supabase functions deploy viva-webhook --no-verify-jwt
 ```
+
+The Vercel configuration adds immutable one-year caching for hashed `/assets/` files, revalidation for SPA HTML routes, and response security headers. The Content Security Policy allows Supabase project subdomains for gallery requests and storage images because `vercel.json` is static and cannot interpolate the deployment's `VITE_SUPABASE_URL`; narrow this source to the exact project origin if the deployment uses a custom CSP configuration.
 
 Configure Viva to send payment notifications to `https://YOUR_PROJECT_REF.supabase.co/functions/v1/viva-webhook` with the `Key YOUR_VIVA_WEBHOOK_KEY` authorization header. The webhook independently looks up each transaction with Viva and checks its order reference, completed status, amount, and EUR currency before marking an order paid. `create-viva-order` and `order-downloads` require the Supabase JWT; the webhook authenticates using the configured secret.
 

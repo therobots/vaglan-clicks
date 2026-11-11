@@ -1,5 +1,4 @@
 import React, { useEffect, useRef, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
 import { Check, ChevronLeft, ChevronRight, Download, X } from "lucide-react";
 import { formatMoney } from "@/lib/money";
 import { galleryText, useGalleryLanguage } from "@/lib/galleryLanguage";
@@ -148,13 +147,7 @@ export default function PhotoLightbox({
   };
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 24 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: 24 }}
-      transition={{ type: "spring", stiffness: 320, damping: 32 }}
-      className="fixed inset-0 z-50 flex flex-col bg-white"
-    >
+    <div className="fixed inset-0 z-50 flex animate-lightbox-in flex-col bg-white">
       <div className="flex items-center justify-between px-4 pb-3 pt-[calc(env(safe-area-inset-top)+0.75rem)]">
         <div className="min-w-0 pr-3">
           <span className="block truncate text-[11px] font-bold uppercase tracking-[0.1em] text-black/35">
@@ -184,15 +177,12 @@ export default function PhotoLightbox({
         onTouchCancel={handleTouchCancel}
         className="relative mx-4 mb-4 flex-1 overflow-hidden rounded-2xl bg-neutral-100 touch-none"
       >
-        <AnimatePresence initial={false}>
-          <motion.div
-            key={photo.id}
-            initial={{ x: direction * 70, opacity: 0 }}
-            animate={{ x: 0, opacity: 1 }}
-            exit={{ x: direction * -70, opacity: 0 }}
-            transition={{ type: "spring", stiffness: 340, damping: 34 }}
-            className="absolute inset-0"
-          >
+        <div
+          key={photo.id}
+          className={`absolute inset-0 ${
+            direction > 0 ? "animate-lightbox-photo-next" : "animate-lightbox-photo-previous"
+          }`}
+        >
             <div
               className="relative flex h-full w-full select-none items-center justify-center"
               onContextMenu={(e) => e.preventDefault()}
@@ -214,15 +204,14 @@ export default function PhotoLightbox({
                 <div className="h-full w-full bg-neutral-100" role="img" aria-label="Photo preview unavailable" />
               )}
             </div>
-          </motion.div>
-        </AnimatePresence>
+        </div>
 
         <button
           type="button"
           onClick={() => go(-1)}
           disabled={!hasPrev}
           aria-label="Previous photo"
-          className="absolute left-2 top-1/2 z-20 hidden h-10 w-10 -translate-y-1/2 place-items-center rounded-full border border-[#E5E7EB] bg-white/90 text-black shadow-sm backdrop-blur transition-opacity active:scale-90 disabled:opacity-25 md:grid"
+          className="absolute left-2 top-1/2 z-20 hidden h-10 w-10 -translate-y-1/2 place-items-center rounded-full border border-[#E5E7EB] bg-white text-black shadow-sm transition-opacity active:scale-90 disabled:opacity-25 md:grid"
         >
           <ChevronLeft className="h-5 w-5" strokeWidth={2.4} />
         </button>
@@ -231,7 +220,7 @@ export default function PhotoLightbox({
           onClick={() => go(1)}
           disabled={!hasNext}
           aria-label="Next photo"
-          className="absolute right-2 top-1/2 z-20 hidden h-10 w-10 -translate-y-1/2 place-items-center rounded-full border border-[#E5E7EB] bg-white/90 text-black shadow-sm backdrop-blur transition-opacity active:scale-90 disabled:opacity-25 md:grid"
+          className="absolute right-2 top-1/2 z-20 hidden h-10 w-10 -translate-y-1/2 place-items-center rounded-full border border-[#E5E7EB] bg-white text-black shadow-sm transition-opacity active:scale-90 disabled:opacity-25 md:grid"
         >
           <ChevronRight className="h-5 w-5" strokeWidth={2.4} />
         </button>
@@ -279,6 +268,6 @@ export default function PhotoLightbox({
           </button>
         )}
       </div>
-    </motion.div>
+    </div>
   );
 }

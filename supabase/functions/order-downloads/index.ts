@@ -78,10 +78,11 @@ Deno.serve(async (request) => {
       throw new Error("The paid order returned an invalid item list.");
     }
 
-    const items = await Promise.all(order.items.map(async (item: {
+    const items = order.items.map((item: {
       photo_id: string;
       filename: string;
       preview_url: string | null;
+      thumbnail_url: string | null;
       original_path: string;
       original_bucket?: string;
     }) => {
@@ -92,18 +93,41 @@ Deno.serve(async (request) => {
       if (!["private-originals", "originals", "photo-originals"].includes(originalBucket)) {
         throw new Error("The order contains an invalid original storage bucket.");
       }
-      const { data, error } = await supabase.storage
-        .from(originalBucket)
-        .createSignedUrl(item.original_path, 900, { download: safeFilename });
-      if (error || !data?.signedUrl) {
-        throw error || new Error("Could not create a secure photo download.");
-      }
       return {
+        ...item,
         photoId: item.photo_id,
         filename: safeFilename,
         previewUrl: item.preview_url,
-        downloadUrl: data.signedUrl,
+        thumbnailUrl: item.thumbnail_url || item.preview_url,
+        originalBucket,
       };
+    }));
+
+    const entriesByBucket = new Map<string, typeof items>();
+    for (const item of items) {
+      const entries = entriesByBucket.get(item.originalBucket) || [];
+      entries.push(item);
+      entriesByBucket.set(item.originalBucket, entries);
+    }
+
+    const signedUrls = new Map<string, string>();
+    await Promise.all([...entriesByBucket].map(async ([bucket, entries]) => {
+      const { data, error } = await supabase.storage
+        .from(bucket)
+        .createSignedUrls(entries.map((item) => item.original_path), 900);
+      if (error) throw error;
+      if (!data || data.length !== entries.length) {
+        throw new Error("The secure photo download links could not be created.");
+      }
+      data.forEach((signed, index) => {
+        const item = entries[index];
+        if (signed.error || signed.path !== item.original_path || !signed.signedUrl) {
+          throw new Error(signed.error || "Could not create a secure photo download.");
+        }
+        const downloadUrl = new URL(signed.signedUrl);
+        downloadUrl.searchParams.set("download", item.filename);
+        signedUrls.set(`${bucket}:${item.original_path}`, downloadUrl.toString());
+      });
     }));
 
     return respond({
@@ -112,7 +136,13 @@ Deno.serve(async (request) => {
       subtotalCents: order.subtotal_cents,
       tipCents: order.tip_cents,
       totalCents: order.total_cents,
-      items,
+      items: items.map((item) => ({
+        photoId: item.photoId,
+        filename: item.filename,
+        previewUrl: item.previewUrl,
+        thumbnailUrl: item.thumbnailUrl,
+        downloadUrl: signedUrls.get(`${item.originalBucket}:${item.original_path}`),
+      })),
     });
   } catch (error) {
     console.error("Secure order download request failed:", error);

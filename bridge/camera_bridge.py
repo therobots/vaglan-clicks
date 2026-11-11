@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
+import math
 import mimetypes
 import os
 import queue
 import re
+import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -26,6 +29,8 @@ ORIGINALS_BUCKET = "private-originals"
 PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
 PHOTO_NAMESPACE = uuid.UUID("08650d10-527c-4c78-bec7-572573cd1d83")
 ALBUM_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+QR_CARD_PATTERN = re.compile(r"(?:^|[_-])(?:qr|album)[_-]?card(?:$|[_-])", re.IGNORECASE)
+RETRY_DELAYS_SECONDS = (5, 15, 60, 300)
 LOG = logging.getLogger("camera_bridge")
 
 
@@ -98,6 +103,11 @@ def parse_album_url(raw_url: str, gallery_base_url: str | None = None) -> str | 
         return None
 
 
+def is_qr_card_frame(path: Path) -> bool:
+    configured = os.environ.get("CAMERA_QR_CARD_MODE", "").strip().lower()
+    return configured in {"1", "true", "yes", "on"} or bool(QR_CARD_PATTERN.search(path.stem))
+
+
 def detect_album_qr(path: Path, gallery_base_url: str | None = None) -> str | None:
     try:
         from pyzbar.pyzbar import decode
@@ -106,7 +116,12 @@ def detect_album_qr(path: Path, gallery_base_url: str | None = None) -> str | No
         return None
     try:
         with Image.open(path) as image:
+            image.draft("RGB", (1600, 1600))
+            image.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
             decoded = decode(image)
+        if not decoded and is_qr_card_frame(path):
+            with Image.open(path) as image:
+                decoded = decode(image)
     except Exception:
         return None
     matches = set()
@@ -126,6 +141,102 @@ def detect_album_qr(path: Path, gallery_base_url: str | None = None) -> str | No
         LOG.warning("Conflicting album QR codes detected in %s; album session unchanged.", path)
         return "__conflict__"
     return None
+
+
+class RetryJournal:
+    def __init__(self, path: Path):
+        self.path = path
+        self._lock = threading.Lock()
+        self._entries: dict[str, dict[str, int | float]] = {}
+        self._load()
+
+    def _load(self) -> None:
+        try:
+            saved = json.loads(self.path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        except (OSError, json.JSONDecodeError) as error:
+            raise RuntimeError(f"Could not read camera retry journal {self.path}.") from error
+        if not isinstance(saved, dict):
+            raise RuntimeError(f"Camera retry journal {self.path} has an invalid format.")
+
+        for file_path, entry in saved.items():
+            if (
+                not isinstance(file_path, str)
+                or not isinstance(entry, dict)
+                or not isinstance(entry.get("attempts"), int)
+                or isinstance(entry.get("attempts"), bool)
+                or entry["attempts"] < 1
+                or not isinstance(entry.get("next_attempt_at"), (int, float))
+                or not math.isfinite(entry["next_attempt_at"])
+            ):
+                raise RuntimeError(f"Camera retry journal {self.path} has an invalid entry.")
+            self._entries[file_path] = {
+                "attempts": entry["attempts"],
+                "next_attempt_at": float(entry["next_attempt_at"]),
+            }
+
+    def _save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = self.path.with_name(f"{self.path.name}.tmp")
+        try:
+            with temporary_path.open("w", encoding="utf-8") as journal_file:
+                json.dump(self._entries, journal_file, separators=(",", ":"))
+                journal_file.flush()
+                os.fsync(journal_file.fileno())
+            os.replace(temporary_path, self.path)
+        except OSError as error:
+            raise RuntimeError(f"Could not persist camera retry journal {self.path}.") from error
+        finally:
+            temporary_path.unlink(missing_ok=True)
+
+    def is_waiting(self, file_path: str, now: float | None = None) -> bool:
+        current_time = time.time() if now is None else now
+        with self._lock:
+            entry = self._entries.get(file_path)
+            return bool(entry and entry["next_attempt_at"] > current_time)
+
+    def due_paths(self, now: float | None = None) -> list[str]:
+        current_time = time.time() if now is None else now
+        with self._lock:
+            return [
+                file_path
+                for file_path, entry in self._entries.items()
+                if entry["next_attempt_at"] <= current_time
+            ]
+
+    def record_failure(self, file_path: str, now: float | None = None) -> int:
+        current_time = time.time() if now is None else now
+        with self._lock:
+            attempts = self._entries.get(file_path, {}).get("attempts", 0) + 1
+            delay = RETRY_DELAYS_SECONDS[min(attempts - 1, len(RETRY_DELAYS_SECONDS) - 1)]
+            self._entries[file_path] = {
+                "attempts": attempts,
+                "next_attempt_at": current_time + delay,
+            }
+            self._save()
+        return delay
+
+    def remove(self, file_path: str) -> None:
+        with self._lock:
+            if self._entries.pop(file_path, None) is not None:
+                self._save()
+
+    def remove_missing_files(self) -> None:
+        with self._lock:
+            missing = [
+                file_path for file_path in self._entries
+                if not Path(file_path).is_file()
+            ]
+            for file_path in missing:
+                del self._entries[file_path]
+            if missing:
+                self._save()
+
+    @property
+    def pending_count(self) -> int:
+        with self._lock:
+            return len(self._entries)
 
 
 def safe_filename(filename: str) -> str:
@@ -163,16 +274,13 @@ def prepare_previews(
     thumbnail_destination: Path,
 ) -> None:
     with Image.open(source) as opened:
-        image = ImageOps.exif_transpose(opened).convert("RGBA")
-
-    if max(image.width, image.height) > PREVIEW_MAX_DIMENSION:
-        if image.width >= image.height:
-            preview_width = PREVIEW_MAX_DIMENSION
-            preview_height = max(1, round(image.height * PREVIEW_MAX_DIMENSION / image.width))
-        else:
-            preview_height = PREVIEW_MAX_DIMENSION
-            preview_width = max(1, round(image.width * PREVIEW_MAX_DIMENSION / image.height))
-        image = image.resize((preview_width, preview_height), Image.Resampling.LANCZOS)
+        opened.draft("RGB", (2 * PREVIEW_MAX_DIMENSION, 2 * PREVIEW_MAX_DIMENSION))
+        image = ImageOps.exif_transpose(opened)
+        image.thumbnail(
+            (PREVIEW_MAX_DIMENSION, PREVIEW_MAX_DIMENSION),
+            Image.Resampling.LANCZOS,
+        )
+        image = image.convert("RGBA")
 
     with Image.open(watermark_path) as opened_watermark:
         watermark = opened_watermark.convert("RGBA")
@@ -181,18 +289,19 @@ def prepare_previews(
     position = ((image.width - watermark.width) // 2, (image.height - watermark.height) // 2)
     image.alpha_composite(watermark, position)
 
-    image.convert("RGB").save(preview_destination, format="WEBP", quality=PREVIEW_QUALITY, method=6)
+    image.convert("RGB").save(preview_destination, format="WEBP", quality=PREVIEW_QUALITY, method=4)
 
     thumbnail = image.copy()
-    if max(thumbnail.width, thumbnail.height) > THUMB_MAX_DIMENSION:
-        if thumbnail.width >= thumbnail.height:
-            thumbnail_width = THUMB_MAX_DIMENSION
-            thumbnail_height = max(1, round(thumbnail.height * THUMB_MAX_DIMENSION / thumbnail.width))
-        else:
-            thumbnail_height = THUMB_MAX_DIMENSION
-            thumbnail_width = max(1, round(thumbnail.width * THUMB_MAX_DIMENSION / thumbnail.height))
-        thumbnail = thumbnail.resize((thumbnail_width, thumbnail_height), Image.Resampling.LANCZOS)
-    thumbnail.convert("RGB").save(thumbnail_destination, format="WEBP", quality=THUMB_QUALITY, method=6)
+    thumbnail.thumbnail(
+        (THUMB_MAX_DIMENSION, THUMB_MAX_DIMENSION),
+        Image.Resampling.LANCZOS,
+    )
+    thumbnail.convert("RGB").save(
+        thumbnail_destination,
+        format="WEBP",
+        quality=THUMB_QUALITY,
+        method=4,
+    )
 
 
 def file_sha256(path: Path) -> str:
@@ -350,14 +459,21 @@ def wait_until_stable(path: Path, stable_checks: int = 3, interval_seconds: floa
 
 
 class CameraEventHandler(FileSystemEventHandler):
-    def __init__(self, watch_dir: Path, queue_ref: "queue.Queue[str]", seen: set[str]):
+    def __init__(
+        self,
+        watch_dir: Path,
+        queue_ref: "queue.Queue[str]",
+        seen: set[str],
+        retry_journal: RetryJournal,
+    ):
         self.watch_dir = watch_dir
         self.queue_ref = queue_ref
         self.seen = seen
+        self.retry_journal = retry_journal
 
     def _enqueue(self, path: str) -> None:
         normalized = str(Path(path).resolve())
-        if normalized in self.seen:
+        if normalized in self.seen or self.retry_journal.is_waiting(normalized):
             return
         self.seen.add(normalized)
         self.queue_ref.put(normalized)
@@ -383,30 +499,39 @@ def process_pending_files(
     gallery_base_url: str | None,
     default_album: str | None,
     active_album: dict,
+    seen: set[str],
+    retry_journal: RetryJournal,
+    last_success: dict[str, float | None],
 ) -> None:
     while not queue_ref.empty():
         file_path = Path(queue_ref.get())
         try:
             if not file_path.exists() or not file_path.is_file():
+                retry_journal.remove(str(file_path.resolve()))
                 continue
             if file_path.suffix.lower() not in PHOTO_EXTENSIONS:
+                retry_journal.remove(str(file_path.resolve()))
                 continue
             if file_path.resolve() == watermark_path:
+                retry_journal.remove(str(file_path.resolve()))
                 continue
             if not wait_until_stable(file_path):
-                continue
+                raise RuntimeError("The camera file is not stable yet.")
             album_marker = detect_album_qr(file_path, gallery_base_url)
             if album_marker == "__conflict__":
                 LOG.warning("Skipping ambiguous album QR card %s without changing the active album.", file_path)
+                retry_journal.remove(str(file_path.resolve()))
                 continue
             if album_marker:
                 previous = active_album.get("value")
                 active_album["value"] = album_marker
                 LOG.info("Album session changed from %s to %s after QR scan %s.", previous, album_marker, file_path.name)
+                retry_journal.remove(str(file_path.resolve()))
                 continue
 
             if not active_album.get("value") and not default_album:
                 LOG.info("Skipping %s until an album is established. Set CAMERA_DEFAULT_ALBUM to enable a fallback.", file_path.name)
+                retry_journal.remove(str(file_path.resolve()))
                 continue
             album_name = active_album.get("value") or default_album or "general"
             try:
@@ -415,9 +540,22 @@ def process_pending_files(
                 LOG.warning("Default album %r is invalid; falling back to general.", album_name)
                 album_name = "general"
             active_album["value"] = album_name
-            upload_photo(client, file_path, watermark_path, camera_timezone, offset_seconds, album_name)
+            uploaded = upload_photo(
+                client,
+                file_path,
+                watermark_path,
+                camera_timezone,
+                offset_seconds,
+                album_name,
+            )
+            retry_journal.remove(str(file_path.resolve()))
+            if uploaded:
+                last_success["at"] = time.time()
         except Exception:
-            LOG.exception("Could not process %s; it will be retried.", file_path.name)
+            retry_path = str(file_path.resolve())
+            delay = retry_journal.record_failure(retry_path)
+            seen.discard(retry_path)
+            LOG.exception("Could not process %s; retrying in %s seconds.", file_path.name, delay)
         finally:
             queue_ref.task_done()
 
@@ -464,20 +602,25 @@ def main() -> None:
     active_album = {"value": None}
     queue_ref: "queue.Queue[str]" = queue.Queue()
     seen: set[str] = set()
+    retry_journal = RetryJournal(Path.home() / ".vaglan-clicks-camera-retries.json")
+    retry_journal.remove_missing_files()
+    handler = CameraEventHandler(watch_dir, queue_ref, seen, retry_journal)
 
     for photo_path in sorted(watch_dir.iterdir()):
         if photo_path.is_file() and photo_path.suffix.lower() in PHOTO_EXTENSIONS:
-            queue_ref.put(str(photo_path.resolve()))
-            seen.add(str(photo_path.resolve()))
+            handler._enqueue(str(photo_path.resolve()))
 
-    handler = CameraEventHandler(watch_dir, queue_ref, seen)
     observer = Observer()
     observer.schedule(handler, str(watch_dir), recursive=False)
     observer.start()
     LOG.info("Watching %s for new camera images.", watch_dir)
 
+    last_success: dict[str, float | None] = {"at": None}
+    last_summary_at = 0.0
     try:
         while True:
+            for retry_path in retry_journal.due_paths():
+                handler._enqueue(retry_path)
             process_pending_files(
                 watch_dir,
                 queue_ref,
@@ -488,7 +631,22 @@ def main() -> None:
                 gallery_base_url,
                 default_album,
                 active_album,
+                seen,
+                retry_journal,
+                last_success,
             )
+            if time.time() - last_summary_at >= 60:
+                last_success_text = (
+                    datetime.fromtimestamp(last_success["at"]).astimezone().strftime("%H:%M:%S")
+                    if last_success["at"] is not None
+                    else "never"
+                )
+                LOG.info(
+                    "%d pending, last success at %s.",
+                    retry_journal.pending_count,
+                    last_success_text,
+                )
+                last_summary_at = time.time()
             time.sleep(1)
     finally:
         observer.stop()

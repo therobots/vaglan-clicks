@@ -1,5 +1,4 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AnimatePresence } from 'framer-motion'
 import GalleryFooter from '@/components/gallery/GalleryFooter'
 import GalleryHeader from '@/components/gallery/GalleryHeader'
 import LiveStatusPill from '@/components/gallery/LiveStatusPill'
@@ -9,8 +8,6 @@ import TimeFilterBar from '@/components/gallery/TimeFilterBar'
 import GalleryTabs from '@/components/gallery/GalleryTabs'
 import PhotoRemovalDialog from '@/components/gallery/PhotoRemovalDialog'
 import PhotoCard from '@/components/gallery/PhotoCard'
-import Info from '@/pages/Info'
-import Success from '@/pages/Success'
 import { isSupabaseConfigured, supabase } from './supabaseClient'
 import { cacheCartSelection, readCartSelection, readCartTip } from '@/lib/orderSession'
 import { edgeFunctionErrorMessage } from '@/lib/edgeFunctionError'
@@ -46,9 +43,11 @@ import {
 const PhotoLightbox = lazy(() => import('@/components/gallery/PhotoLightbox'))
 const CheckoutSheet = lazy(() => import('@/components/gallery/CheckoutSheet'))
 const Admin = lazy(() => import('@/pages/Admin'))
+const Info = lazy(() => import('@/pages/Info'))
+const Success = lazy(() => import('@/pages/Success'))
 
 const CART_ID = 'public-gallery'
-const PAGE_SIZE = 20
+const PAGE_SIZE = 48
 const NOTICE_KEY = 'vaglan-gallery-notice-dismissed'
 const normalizePhotoRow = (photo) => ({
   ...photo,
@@ -121,7 +120,7 @@ function GalleryApp() {
   const [loadError, setLoadError] = useState('')
   const [connectionStatus, setConnectionStatus] = useState('connecting')
   const [checkoutOpen, setCheckoutOpen] = useState(false)
-  const [checkoutLoaded, setCheckoutLoaded] = useState(false)
+  const [checkoutMounted, setCheckoutMounted] = useState(false)
   const [checkoutBusy, setCheckoutBusy] = useState(false)
   const [checkoutError, setCheckoutError] = useState('')
   const [noticeDismissed, setNoticeDismissed] = useState(() => {
@@ -691,6 +690,7 @@ function GalleryApp() {
 
   const photoGroups = useMemo(() => groupPhotosByTime(photos), [photos])
   const selectedCount = selectedIds.length
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds])
   const activePhotoIndex = activePhoto ? photos.findIndex((photo) => photo.id === activePhoto.id) : -1
   const firstPhotoPrice = firstPhotoCents / 100
   const extraPhotoPrice = extraPhotoCents / 100
@@ -928,14 +928,18 @@ function GalleryApp() {
           </p>
         ) : (
           <>
-            {photoGroups.map((group) => (
-              <section key={group.key} aria-label={`Photos at ${group.label} Athens time`}>
-                <h2 className="sticky top-16 z-20 border-y border-gray-100 bg-white/95 px-4 py-2 text-xs font-bold text-neutral-600 backdrop-blur">
+            {photoGroups.map((group, groupIndex) => (
+              <section
+                key={group.key}
+                aria-label={`Photos at ${group.label} Athens time`}
+                className="content-auto"
+              >
+                <h2 className="sticky top-16 z-20 border-y border-gray-100 bg-white px-4 py-2 text-xs font-bold text-neutral-600">
                   {group.label} Athens time
                 </h2>
                 <div className="grid grid-cols-3 gap-0.5 p-0.5">
-                  {group.photos.map((photo) => {
-                    const selected = selectedIds.includes(photo.id)
+                  {group.photos.map((photo, photoIndex) => {
+                    const selected = selectedSet.has(photo.id)
                     return (
                       <article
                         key={photo.id}
@@ -946,6 +950,7 @@ function GalleryApp() {
                         <PhotoCard
                           photo={photo}
                           selected={selected}
+                          fetchPriority={groupIndex === 0 && photoIndex < 3 ? 'high' : 'auto'}
                           onOpen={setActivePhoto}
                           onToggle={toggleSelected}
                         />
@@ -988,23 +993,20 @@ function GalleryApp() {
         <GalleryFooter language={language} />
       </main>
 
-      <AnimatePresence>
-        {selectedCount > 0 && (
-          <CartBar
-            count={selectedCount}
-            amount={total}
-            currency={currency}
-            onCheckout={() => {
-              setCheckoutError('')
-              setCheckoutLoaded(true)
-              setCheckoutOpen(true)
-            }}
-          />
-        )}
-      </AnimatePresence>
+      <CartBar
+        visible={selectedCount > 0}
+        count={selectedCount}
+        amount={total}
+        currency={currency}
+        onCheckout={() => {
+          setCheckoutError('')
+          setCheckoutMounted(true)
+          window.requestAnimationFrame(() => setCheckoutOpen(true))
+        }}
+      />
 
       <Suspense fallback={null}>
-        {checkoutLoaded && (
+        {checkoutMounted && (
           <CheckoutSheet
             open={checkoutOpen}
             count={selectedCount}
@@ -1024,31 +1026,29 @@ function GalleryApp() {
           />
         )}
 
-        <AnimatePresence>
-          {activePhoto && activePhotoIndex >= 0 && (
-            <PhotoLightbox
-              photo={activePhoto}
-              selected={selectedIds.includes(activePhoto.id)}
-              isFree={Boolean(activePhoto.is_free)}
-              isDownloading={downloadingPhotoId === activePhoto.id}
-              downloadError={downloadError}
-              onDownloadFree={() => downloadFreePhoto(activePhoto)}
-              price={nextPhotoPrice(selectedCount, firstPhotoPrice, extraPhotoPrice)}
-              currency={currency}
-              capturedAt={formatAthensDateTime(activePhoto.timestamp)}
-              hasPrev={activePhotoIndex > 0}
-              hasNext={activePhotoIndex < photos.length - 1}
-              onPrev={() => setActivePhoto(photos[activePhotoIndex - 1])}
-              onNext={() => setActivePhoto(photos[activePhotoIndex + 1])}
-              onToggle={() => toggleSelected(activePhoto.id)}
-              onRequestRemoval={() => {
-                setRemovalPhoto(activePhoto)
-                setRemovalError('')
-              }}
-              onClose={() => setActivePhoto(null)}
-            />
-          )}
-        </AnimatePresence>
+        {activePhoto && activePhotoIndex >= 0 && (
+          <PhotoLightbox
+            photo={activePhoto}
+            selected={selectedSet.has(activePhoto.id)}
+            isFree={Boolean(activePhoto.is_free)}
+            isDownloading={downloadingPhotoId === activePhoto.id}
+            downloadError={downloadError}
+            onDownloadFree={() => downloadFreePhoto(activePhoto)}
+            price={nextPhotoPrice(selectedCount, firstPhotoPrice, extraPhotoPrice)}
+            currency={currency}
+            capturedAt={formatAthensDateTime(activePhoto.timestamp)}
+            hasPrev={activePhotoIndex > 0}
+            hasNext={activePhotoIndex < photos.length - 1}
+            onPrev={() => setActivePhoto(photos[activePhotoIndex - 1])}
+            onNext={() => setActivePhoto(photos[activePhotoIndex + 1])}
+            onToggle={() => toggleSelected(activePhoto.id)}
+            onRequestRemoval={() => {
+              setRemovalPhoto(activePhoto)
+              setRemovalError('')
+            }}
+            onClose={() => setActivePhoto(null)}
+          />
+        )}
       </Suspense>
       <PhotoRemovalDialog
         open={Boolean(removalPhoto)}
@@ -1065,11 +1065,11 @@ function GalleryApp() {
 export default function App() {
   const pathname = window.location.pathname.replace(/\/+$/, '')
   if (pathname === '/admin') return <Suspense fallback={null}><Admin /></Suspense>
-  if (pathname === '/success') return <Success />
-  if (pathname === '/info') return <Info />
+  if (pathname === '/success') return <Suspense fallback={null}><Success /></Suspense>
+  if (pathname === '/info') return <Suspense fallback={null}><Info /></Suspense>
   if (pathname.startsWith('/orders/')) {
     const token = pathname.slice('/orders/'.length)
-    return <Success orderToken={token} />
+    return <Suspense fallback={null}><Success orderToken={token} /></Suspense>
   }
   return <GalleryApp />
 }

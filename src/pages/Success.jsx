@@ -150,9 +150,9 @@ export default function Success({ orderToken = "" }) {
           <div className="mt-10 grid grid-cols-2 gap-3 sm:grid-cols-3">
             {downloads.map((photo) => (
               <article key={photo.photoId} className="overflow-hidden rounded-xl border border-neutral-200">
-                {photo.previewUrl ? (
+                {photo.thumbnailUrl || photo.previewUrl ? (
                   <img
-                    src={photo.previewUrl}
+                    src={photo.thumbnailUrl || photo.previewUrl}
                     alt=""
                     loading="lazy"
                     decoding="async"

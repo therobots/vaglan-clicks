@@ -30,6 +30,8 @@ The browser/Admin uploader uses the corresponding `VITE_PREVIEW_MAX_DIMENSION`, 
 
 After deploying bridge changes, update the code on the camera laptop and restart the bridge process so it uses the current sizing, quality, and watermark implementation.
 
+The bridge asks Pillow to decode JPEGs at a reduced draft size, then resizes previews with Lanczos and uses WebP method 4 to reduce processing time. QR detection scans at up to 1600 px first. It retries at full resolution only for filenames containing `qr-card` or `album-card`, or when `CAMERA_QR_CARD_MODE=1` is set for a scan session. Transient file, network, or upload failures are written to `%USERPROFILE%\.vaglan-clicks-camera-retries.json` and retried after increasing delays (5 seconds, 15 seconds, 60 seconds, then every 5 minutes). Keep the journal with the camera laptop's local data; the bridge logs its pending retry count and most recent successful upload.
+
 ## Album QR sessions
 
 - The camera bridge supports QR-driven album sessions. Scan a valid gallery card that points to `https://your-gallery.example/?album=042`; the bridge accepts only URLs from the configured `GALLERY_BASE_URL` host and path and rejects missing, duplicate, malformed, or malicious `album` parameters.

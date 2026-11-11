@@ -3,6 +3,7 @@ import {
   buildCheckoutLineItems,
   validateCheckoutSelection,
 } from "../../../src/lib/pricing.js";
+import { getVivaAccessToken } from "../_shared/vivaAuth.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -57,30 +58,6 @@ const vivaEndpoints = (environment: string) => {
     };
   }
   throw new Error("VIVA_ENVIRONMENT must be set to demo or live.");
-};
-
-const getVivaAccessToken = async (
-  endpoints: ReturnType<typeof vivaEndpoints>,
-  clientId: string,
-  clientSecret: string,
-) => {
-  const response = await fetch(`${endpoints.accounts}/connect/token`, {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${btoa(`${clientId}:${clientSecret}`)}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: new URLSearchParams({
-      grant_type: "client_credentials",
-      scope: "urn:viva:payments:core:api:redirectcheckout",
-    }),
-    signal: AbortSignal.timeout(15000),
-  });
-  const result = await response.json();
-  if (!response.ok || typeof result?.access_token !== "string") {
-    throw new Error("Viva authentication failed.");
-  }
-  return result.access_token as string;
 };
 
 Deno.serve(async (request) => {
