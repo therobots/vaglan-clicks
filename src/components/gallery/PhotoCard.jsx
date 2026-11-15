@@ -1,12 +1,13 @@
 import React, { useState } from "react";
 import { Check } from "lucide-react";
+import { previewUrl } from "@/lib/previewUrl";
 
-function PhotoCard({ photo, selected, fetchPriority = "auto", onToggle, onOpen }) {
+function PhotoCard({ photo, album, selected, fetchPriority = "auto", onToggle, onOpen }) {
   const [failedSource, setFailedSource] = useState(null);
   /** @type {"high" | "low" | "auto"} */
   const imageFetchPriority =
     fetchPriority === "high" ? "high" : fetchPriority === "low" ? "low" : "auto";
-  const imageSource = photo.thumbnail_url;
+  const imageSource = previewUrl(photo, album);
   const imageFailed = failedSource === imageSource;
   const alt = photo.filename || "Photo preview";
 

@@ -57,6 +57,8 @@ Album sessions use the public gallery query parameter `?album=042`; the value mu
 
 The public `/info` page is bilingual and includes the photo-removal request process. Have the operator-specific legal information reviewed and complete the checklist in [`docs/SETUP.md`](./docs/SETUP.md) before public sales.
 
+The focused review adds private preview delivery and paid-order deletion protection. Follow the coordinated migration and deployment order in [`docs/SETUP.md`](./docs/SETUP.md); the Vercel preview route needs a server-only `SUPABASE_SERVICE_ROLE_KEY`. The operator's identity, public contact details, consumer terms, and canonical production URL are still needed before public-sales and discovery checks can pass.
+
 Public free-photo downloads are issued as short-lived signed URLs only after the server verifies `photos.is_free`. Admin sessions expire after four hours and PIN attempts are rate-limited. Before deployment, follow the database backup, migration, and anon-access audit steps in [`docs/SETUP.md`](./docs/SETUP.md).
 
 ## Payments

@@ -241,8 +241,13 @@ export default function Admin() {
   }
 
   const resolveRemoval = async (request, action) => {
-    if (action === 'delete-removal' && !window.confirm('Permanently delete this photo and its stored files?')) {
-      return
+    if (action === 'delete-removal') {
+      const affected = Number(request.paid_order_count || 0)
+      const warning = affected > 0
+        ? `Permanently erase this photo? ${affected} paid order(s) will lose this download. Review those customers for a refund or remedy.`
+        : 'Permanently delete this photo and its stored files?'
+      if (!window.confirm(warning)) return
+      if (affected > 0 && window.prompt('Type ERASE to confirm the paid-download impact.') !== 'ERASE') return
     }
     const result = await runAdminAction(request.request_id, action, { requestId: request.request_id })
     if (!result) return
@@ -253,7 +258,9 @@ export default function Admin() {
     )
     if (action === 'delete-removal') {
       setPhotos((current) => current.filter((photo) => photo.id !== request.photo_id))
-      setNotice('Photo permanently deleted and removal request closed.')
+      setNotice(result.affectedPaidOrders
+        ? `Photo erased; ${result.affectedPaidOrders} paid order(s) need follow-up.`
+        : 'Photo permanently deleted and removal request closed.')
     } else {
       setPhotos((current) =>
         current.map((photo) => photo.id === request.photo_id

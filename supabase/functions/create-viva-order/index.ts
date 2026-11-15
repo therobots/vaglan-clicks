@@ -11,6 +11,37 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const MAX_BODY_BYTES = 8_192;
+
+const readCheckoutBody = async (request: Request) => {
+  const declared = Number(request.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) throw new RangeError("Request too large.");
+  const reader = request.body?.getReader();
+  if (!reader) throw new SyntaxError("Missing request body.");
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_BODY_BYTES) {
+      await reader.cancel();
+      throw new RangeError("Request too large.");
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  return JSON.parse(new TextDecoder().decode(bytes));
+};
+
+const hashClientIp = async (ip: string, secret: string) => {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const digest = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(ip));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+};
 
 const respond = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -95,7 +126,22 @@ Deno.serve(async (request) => {
   };
 
   try {
-    const payload = await request.json();
+    const clientIp = request.headers.get("cf-connecting-ip") ||
+      request.headers.get("x-real-ip") ||
+      request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+    const { data: allowed, error: rateError } = await client.rpc("consume_order_download_attempt", {
+      ip_input: `checkout:${await hashClientIp(clientIp, serviceRoleKey)}`,
+      window_seconds_input: 900,
+      max_attempts_input: 60,
+    });
+    if (rateError) throw rateError;
+    if (!allowed) return respond({ error: "Too many checkout attempts. Try again later." }, 429);
+    let payload;
+    try { payload = await readCheckoutBody(request); }
+    catch (error) {
+      return respond({ error: error instanceof RangeError ? "Checkout request is too large." : "Invalid checkout request." },
+        error instanceof RangeError ? 413 : 400);
+    }
     if (
       !Array.isArray(payload?.photoIds) ||
       payload.photoIds.length > 100 ||

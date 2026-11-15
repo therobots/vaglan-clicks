@@ -18,6 +18,16 @@ const hashToken = async (token: string) => {
   ).join("");
 };
 
+const privatePreviewPath = (value: string | null, projectUrl: string) => {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    if (url.origin !== new URL(projectUrl).origin) return null;
+    const match = url.pathname.match(/^\/storage\/v1\/object\/(?:public|sign)\/(public-previews|previews|photos)\/(.+)$/);
+    return match ? { bucket: match[1], path: match[2].split('/').map(decodeURIComponent).join('/') } : null;
+  } catch { return null; }
+};
+
 Deno.serve(async (request) => {
   if (request.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (request.method !== "POST") return respond({ error: "Method not allowed." }, 405);
@@ -78,13 +88,22 @@ Deno.serve(async (request) => {
       throw new Error("The paid order returned an invalid item list.");
     }
 
-    const items = order.items.map((item: {
+    const items: Array<{
+      photoId: string;
+      filename: string;
+      previewUrl: string | null;
+      thumbnailUrl: string | null;
+      originalBucket: string;
+      original_path: string;
+      unavailable: boolean;
+    }> = order.items.map((item: {
       photo_id: string;
       filename: string;
       preview_url: string | null;
       thumbnail_url: string | null;
       original_path: string;
       original_bucket?: string;
+      erased_at?: string | null;
     }) => {
       const safeFilename = String(item.filename || "vaglan-clicks-photo")
         .replace(/[^\w.-]/g, "_")
@@ -100,11 +119,13 @@ Deno.serve(async (request) => {
         previewUrl: item.preview_url,
         thumbnailUrl: item.thumbnail_url || item.preview_url,
         originalBucket,
+        unavailable: Boolean(item.erased_at),
       };
-    }));
+    });
 
     const entriesByBucket = new Map<string, typeof items>();
     for (const item of items) {
+      if (item.unavailable) continue;
       const entries = entriesByBucket.get(item.originalBucket) || [];
       entries.push(item);
       entriesByBucket.set(item.originalBucket, entries);
@@ -130,6 +151,16 @@ Deno.serve(async (request) => {
       });
     }));
 
+    const previewUrls = new Map<string, string>();
+    await Promise.all(items.map(async (item) => {
+      if (item.unavailable) return;
+      const preview = privatePreviewPath(item.thumbnailUrl, supabaseUrl);
+      if (!preview) return;
+      const { data, error } = await supabase.storage.from(preview.bucket)
+        .createSignedUrl(preview.path, 900);
+      if (!error && data?.signedUrl) previewUrls.set(item.photoId, data.signedUrl);
+    }));
+
     return respond({
       status: order.status,
       currency: order.currency,
@@ -139,9 +170,10 @@ Deno.serve(async (request) => {
       items: items.map((item) => ({
         photoId: item.photoId,
         filename: item.filename,
-        previewUrl: item.previewUrl,
-        thumbnailUrl: item.thumbnailUrl,
+        previewUrl: previewUrls.get(item.photoId) || null,
+        thumbnailUrl: previewUrls.get(item.photoId) || null,
         downloadUrl: signedUrls.get(`${item.originalBucket}:${item.original_path}`),
+        unavailable: item.unavailable,
       })),
     });
   } catch (error) {

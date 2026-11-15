@@ -163,15 +163,21 @@ export default function Success({ orderToken = "" }) {
                     Photo
                   </div>
                 )}
-                <a
-                  href={photo.downloadUrl}
-                  download={photo.filename}
-                  rel="noopener noreferrer"
-                  className="flex items-center justify-center gap-2 px-3 py-3 text-center text-xs font-bold"
-                >
-                  <Download className="h-4 w-4" aria-hidden="true" />
-                  Download High-Res
-                </a>
+                {photo.unavailable ? (
+                  <p className="px-3 py-3 text-center text-xs text-red-700">
+                    Removed after a privacy request. Contact the photographer about this purchase.
+                  </p>
+                ) : (
+                  <a
+                    href={photo.downloadUrl}
+                    download={photo.filename}
+                    rel="noopener noreferrer"
+                    className="flex items-center justify-center gap-2 px-3 py-3 text-center text-xs font-bold"
+                  >
+                    <Download className="h-4 w-4" aria-hidden="true" />
+                    Download High-Res
+                  </a>
+                )}
               </article>
             ))}
             {downloads.length === 0 && (
