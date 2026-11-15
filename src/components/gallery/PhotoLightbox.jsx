@@ -2,9 +2,11 @@ import React, { useEffect, useRef, useState } from "react";
 import { Check, ChevronLeft, ChevronRight, Download, X } from "lucide-react";
 import { formatMoney } from "@/lib/money";
 import { galleryText, useGalleryLanguage } from "@/lib/galleryLanguage";
+import { previewUrl } from "@/lib/previewUrl";
 
 export default function PhotoLightbox({
   photo,
+  album,
   capturedAt = "",
   selected,
   isFree = false,
@@ -192,7 +194,7 @@ export default function PhotoLightbox({
             >
               {photo.preview_url ? (
                 <img
-                  src={photo.preview_url}
+                  src={previewUrl(photo, album, 'preview')}
                   alt={photo.filename || "Photo preview"}
                   loading="eager"
                   decoding="async"

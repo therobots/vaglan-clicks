@@ -13,6 +13,7 @@ const loginWindowMs = 15 * 60 * 1000;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const maxPreviewBytes = 600_000;
 const maxThumbnailBytes = 100_000;
+class PaidPhotoError extends Error {}
 
 const respond = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -116,7 +117,15 @@ const deletePhotoFiles = async (
   client: ReturnType<typeof createClient>,
   photoId: string,
   supabaseUrl: string,
+  privacyErasure = false,
 ) => {
+  const { data: paidOrders, error: paidError } = await client.rpc(
+    "admin_paid_photo_order_count", { photo_id_input: photoId } as never,
+  );
+  if (paidError) throw paidError;
+  if (paidOrders > 0 && !privacyErasure) {
+    throw new PaidPhotoError(`This photo belongs to ${paidOrders} paid order(s). Use the removal-request process for a privacy erasure.`);
+  }
   const { data: photo, error: photoError } = await client
     .from("photos")
     .select("id, preview_url, thumbnail_url")
@@ -152,6 +161,12 @@ const deletePhotoFiles = async (
       removals.map((removal) => removal.error?.message).filter(Boolean).join("; "),
     );
   }
+  if (privacyErasure && paidOrders > 0) {
+    const { error: erasureError } = await client.rpc("admin_mark_photo_erased", {
+      photo_id_input: photoId,
+    } as never);
+    if (erasureError) throw erasureError;
+  }
   const { error: metadataError } = await client.rpc("delete_photo_original_path", {
     photo_id_input: photo.id,
   });
@@ -163,7 +178,7 @@ const deletePhotoFiles = async (
     { photo_id_input: photo.id },
   );
   if (closeRequestsError) throw closeRequestsError;
-  return true;
+  return { affectedPaidOrders: privacyErasure ? paidOrders : 0 };
 };
 
 Deno.serve(async (request) => {
@@ -278,7 +293,7 @@ Deno.serve(async (request) => {
     if (!sessionValid) return respond({ error: "Admin session expired. Sign in again." }, 401);
 
     if (action === "list-photos") {
-      const photos = [];
+      const photos: Array<{ thumbnail_url: string | null; [key: string]: unknown }> = [];
       let offset = 0;
       while (true) {
         const { data, error } = await client
@@ -290,6 +305,32 @@ Deno.serve(async (request) => {
         photos.push(...(data || []));
         if (!data || data.length < 1000) break;
         offset += data.length;
+      }
+      // The preview buckets are private. Only a validated admin session receives
+      // short-lived URLs, including for hidden photos under review.
+      const grouped = new Map<string, { index: number; path: string }[]>();
+      photos.forEach((photo, index) => {
+        if (!photo.thumbnail_url) return;
+        try {
+          const object = getPreviewPath(photo.thumbnail_url, supabaseUrl);
+          const entries = grouped.get(object.bucket) || [];
+          entries.push({ index, path: object.path });
+          grouped.set(object.bucket, entries);
+        } catch { /* A broken legacy preview should not hide the admin list. */ }
+        photo.thumbnail_url = null;
+      });
+      for (const [bucket, entries] of grouped) {
+        for (let start = 0; start < entries.length; start += 100) {
+          const batch = entries.slice(start, start + 100);
+          const { data, error } = await client.storage.from(bucket)
+            .createSignedUrls(batch.map((entry) => entry.path), 900);
+          if (error) throw error;
+          data?.forEach((signed, index) => {
+            if (signed.signedUrl && signed.path === batch[index].path) {
+              photos[batch[index].index].thumbnail_url = signed.signedUrl;
+            }
+          });
+        }
       }
       return respond({ photos });
     }
@@ -505,9 +546,9 @@ Deno.serve(async (request) => {
         return respond({ success: true });
       }
 
-      const deleted = await deletePhotoFiles(client, photo.id, supabaseUrl);
+      const deleted = await deletePhotoFiles(client, photo.id, supabaseUrl, action === "delete-removal");
       if (!deleted) return respond({ error: "Photo no longer exists." }, 404);
-      return respond({ success: true });
+      return respond({ success: true, affectedPaidOrders: deleted.affectedPaidOrders });
     }
 
     if (action === "reset-gallery") {
@@ -523,6 +564,7 @@ Deno.serve(async (request) => {
     return respond({ error: "Unknown action." }, 400);
   } catch (error) {
     console.error("Gallery admin operation failed:", error);
+    if (error instanceof PaidPhotoError) return respond({ error: error.message }, 409);
     const errorCode =
       typeof error === "object" && error !== null && "code" in error
         ? String(error.code)

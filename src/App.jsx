@@ -773,6 +773,7 @@ function GalleryApp() {
                       >
                         <PhotoCard
                           photo={photo}
+                          album={selectedAlbum}
                           selected={selected}
                           fetchPriority={groupIndex === 0 && photoIndex < 3 ? 'high' : 'auto'}
                           onOpen={setActivePhoto}
@@ -853,6 +854,7 @@ function GalleryApp() {
         {activePhoto && activePhotoIndex >= 0 && (
           <PhotoLightbox
             photo={activePhoto}
+            album={selectedAlbum}
             selected={selectedSet.has(activePhoto.id)}
             isFree={Boolean(activePhoto.is_free)}
             isDownloading={downloadingPhotoId === activePhoto.id}
